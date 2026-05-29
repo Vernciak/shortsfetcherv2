@@ -30,6 +30,13 @@ def init_db():
         conn.commit()
 
 
+def is_empty():
+    """True jeśli tabela channels nie ma żadnych wierszy."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM channels LIMIT 1")
+        return cur.fetchone() is None
+
+
 def get_channels(category):
     """Zwraca listę channel_id dla danej kategorii."""
     with get_conn() as conn, conn.cursor() as cur:

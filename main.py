@@ -36,6 +36,17 @@ app = Flask(__name__)
 try:
     db.init_db()
     print("✅ Baza danych gotowa")
+    # Automatyczna migracja z JSON-ów — wykona się TYLKO gdy baza jest pusta.
+    # Po pierwszym razie sama się pomija (baza ma już kanały).
+    try:
+        if db.is_empty():
+            import migrate_json_to_db
+            migrate_json_to_db.main()
+            print("✅ Automatyczna migracja JSON -> baza zakończona")
+        else:
+            print("ℹ️ Baza ma już kanały — migracja pominięta")
+    except Exception as e:
+        print(f"⚠️ Migracja pominięta z powodu błędu: {e}")
 except Exception as e:
     print(f"⚠️ Nie udało się zainicjalizować bazy: {e}")
 
