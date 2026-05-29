@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Shorts Fetcher</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <div class="logo">▶</div>
+      <h1>Shorts Fetcher</h1>
+    </div>
+    <nav id="nav">
+      <a href="/" data-cat="main">Główna</a>
+      <a href="/viral" data-cat="viral">🔥 Viral</a>
+      <a href="/fun" data-cat="fun">Zagranica 2</a>
+      <a href="/zwierzeta" data-cat="zwierzeta">Zwierzęta</a>
+      <a href="/nauka" data-cat="nauka">Nauka</a>
+      <a href="/k1" data-cat="k1">K1</a>
+      <a href="/k2" data-cat="k2">K2</a>
+      <a href="/k3" data-cat="k3">K3</a>
+      <a href="/k4" data-cat="k4">K4</a>
+      <a href="/k5" data-cat="k5">K5</a>
+      <a href="/k6" data-cat="k6">K6</a>
+      <a href="/manage" data-cat="manage">⚙️ Zarządzaj</a>
+    </nav>
+  </header>
+
+  <!-- WIDOK SHORTÓW -->
+  <div id="view-feed">
+    <div class="controls">
+      <div class="group">
+        <label for="sort">Sortuj:</label>
+        <select id="sort">
+          <option value="published">Najnowsze</option>
+          <option value="views">Wyświetlenia</option>
+          <option value="likes">Polubienia</option>
+        </select>
+      </div>
+      <div class="group">
+        <label for="minviews">Min. wyświetleń:</label>
+        <input type="range" id="minviews" min="0" max="1000000" step="10000" value="0">
+        <span class="minviews-val" id="minviews-val">0</span>
+      </div>
+      <span class="count" id="count"></span>
+    </div>
+    <div id="videos">
+      <div class="state"><div class="spinner"></div>Ładowanie shortów…</div>
+    </div>
+  </div>
+
+  <!-- PANEL ZARZĄDZANIA -->
+  <div id="view-manage" style="display:none">
+    <div class="manage-wrap">
+      <h2 class="manage-title">⚙️ Zarządzaj kanałami</h2>
+      <p class="manage-hint">Wklej link do kanału (<code>/channel/UC...</code> albo <code>/@nazwa</code>) lub do dowolnego filmu/shorta — resztę wykryjemy automatycznie.</p>
+
+      <div class="add-row">
+        <select id="m-category">
+          <option value="main">Główna</option>
+          <option value="fun">Zagranica 2</option>
+          <option value="zwierzeta">Zwierzęta</option>
+          <option value="nauka">Nauka</option>
+          <option value="k1">K1</option>
+          <option value="k2">K2</option>
+          <option value="k3">K3</option>
+          <option value="k4">K4</option>
+          <option value="k5">K5</option>
+          <option value="k6">K6</option>
+        </select>
+        <input type="text" id="m-link" placeholder="https://www.youtube.com/@kanal lub link do filmu" maxlength="300">
+        <button id="m-add">Dodaj</button>
+      </div>
+      <div id="m-msg" class="m-msg"></div>
+
+      <div class="m-list-head">
+        <span>Kanały w kategorii: <b id="m-cat-label">Główna</b></span>
+        <span id="m-count" class="count"></span>
+      </div>
+      <div id="m-list"></div>
+    </div>
+  </div>
+
+  <div class="quota-pill" id="quota"></div>
+
+  <script>
+    const path = window.location.pathname;
+    const valid = ["viral","nauka","zwierzeta","fun","k1","k2","k3","k4","k5","k6","manage"];
+    let category = "main";
+    valid.forEach(c => { if (path === "/" + c) category = c; });
+
+    document.querySelectorAll('#nav a').forEach(a => {
+      if (a.dataset.cat === category) a.classList.add('active');
+    });
+
+    const fmt = n => {
+      n = Number(n) || 0;
+      if (n >= 1e6) return (n/1e6).toFixed(1).replace('.0','') + 'M';
+      if (n >= 1e3) return (n/1e3).toFixed(1).replace('.0','') + 'K';
+      return String(n);
+    };
+
+    const CAT_LABELS = {main:"Główna",fun:"Zagranica 2",zwierzeta:"Zwierzęta",nauka:"Nauka",
+      k1:"K1",k2:"K2",k3:"K3",k4:"K4",k5:"K5",k6:"K6"};
+
+    // ---------- TRYB: PANEL ZARZĄDZANIA ----------
+    if (category === "manage") {
+      document.getElementById('view-feed').style.display = 'none';
+      document.getElementById('view-manage').style.display = 'block';
+
+      const catSel = document.getElementById('m-category');
+      const linkInp = document.getElementById('m-link');
+      const addBtn = document.getElementById('m-add');
+      const msg = document.getElementById('m-msg');
+      const listEl = document.getElementById('m-list');
+
+      function showMsg(text, ok) {
+        msg.textContent = text;
+        msg.className = 'm-msg ' + (ok ? 'ok' : 'err');
+      }
+
+      async function loadList() {
+        const cat = catSel.value;
+        document.getElementById('m-cat-label').textContent = CAT_LABELS[cat];
+        listEl.innerHTML = '<div class="state"><div class="spinner"></div>Ładowanie…</div>';
+        try {
+          const r = await fetch(`/api/channels?category=${cat}`);
+          const data = await r.json();
+          const ch = data.channels || [];
+          document.getElementById('m-count').textContent =
+            ch.length + (ch.length === 1 ? ' kanał' : ' kanałów');
+          if (!ch.length) { listEl.innerHTML = '<div class="state">Brak kanałów w tej kategorii.</div>'; return; }
+          listEl.innerHTML = '';
+          ch.forEach(c => {
+            const row = document.createElement('div');
+            row.className = 'm-item';
+            row.innerHTML = `
+              <div class="m-item-info">
+                <div class="m-item-title">${c.title || '(bez nazwy)'}</div>
+                <div class="m-item-id">${c.channel_id}</div>
+              </div>
+              <button class="m-del" data-id="${c.id}">Usuń</button>`;
+            listEl.appendChild(row);
+          });
+          listEl.querySelectorAll('.m-del').forEach(b => {
+            b.addEventListener('click', async () => {
+              if (!confirm('Usunąć ten kanał?')) return;
+              b.disabled = true;
+              const r = await fetch(`/api/channels/${b.dataset.id}`, {method:'DELETE'});
+              const d = await r.json();
+              if (d.ok) loadList(); else { b.disabled = false; showMsg('Nie udało się usunąć', false); }
+            });
+          });
+        } catch (e) {
+          listEl.innerHTML = '<div class="state">❌ Błąd ładowania listy.</div>';
+        }
+      }
+
+      async function addChannel() {
+        const link = linkInp.value.trim();
+        if (!link) { showMsg('Wklej link', false); return; }
+        addBtn.disabled = true;
+        showMsg('Sprawdzam…', true);
+        try {
+          const r = await fetch('/api/channels', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({category: catSel.value, link})
+          });
+          const d = await r.json();
+          if (d.ok) {
+            showMsg((d.title ? d.title + ' — ' : '') + d.message, true);
+            linkInp.value = '';
+            loadList();
+          } else {
+            showMsg(d.error || 'Nie udało się dodać', false);
+          }
+        } catch (e) {
+          showMsg('Błąd połączenia', false);
+        } finally {
+          addBtn.disabled = false;
+        }
+      }
+
+      addBtn.addEventListener('click', addChannel);
+      linkInp.addEventListener('keydown', e => { if (e.key === 'Enter') addChannel(); });
+      catSel.addEventListener('change', loadList);
+      loadList();
+    }
+
+    // ---------- TRYB: FEED SHORTÓW ----------
+    else {
+      let allVideos = [];
+      const isViral = category === "viral";
+
+      function render() {
+        const sortBy = document.getElementById('sort').value;
+        const minViews = Number(document.getElementById('minviews').value);
+        const container = document.getElementById('videos');
+        let list = allVideos.filter(v => (Number(v.views)||0) >= minViews);
+        list.sort((a,b) => sortBy === 'published'
+          ? new Date(b.published) - new Date(a.published)
+          : (Number(b[sortBy])||0) - (Number(a[sortBy])||0));
+        document.getElementById('count').textContent =
+          list.length + (list.length === 1 ? ' short' : ' shortów');
+        if (!list.length) { container.innerHTML = '<div class="state">😔 Brak wyników dla tych filtrów.</div>'; return; }
+        container.innerHTML = '';
+        list.forEach((v, i) => {
+          const div = document.createElement('div');
+          div.className = 'video';
+          div.style.animationDelay = Math.min(i*30, 400) + 'ms';
+          const viral = (Number(v.views)||0) >= 100000;
+          const date = v.published ? new Date(v.published).toLocaleDateString('pl-PL') : '';
+          div.innerHTML = `
+            <a class="title-link" href="${v.url}" target="_blank" rel="noopener">
+              <div class="thumb-wrap">
+                <img src="${v.thumbnail}" alt="" loading="lazy" />
+                ${viral ? '<span class="badge-viral">VIRAL</span>' : ''}
+                <span class="badge-dur">${v.duration || ''}</span>
+              </div>
+            </a>
+            <div class="body">
+              <a class="title-link" href="${v.url}" target="_blank" rel="noopener"><h3>${v.title}</h3></a>
+              <div class="channel">${v.channel || 'Nieznany kanał'}</div>
+              <div class="stats">
+                <span>👁️ <b>${fmt(v.views)}</b></span>
+                <span>👍 <b>${fmt(v.likes)}</b></span>
+                ${date ? `<span class="date">🗓️ ${date}</span>` : ''}
+              </div>
+            </div>`;
+          container.appendChild(div);
+        });
+      }
+
+      if (isViral) document.getElementById('sort').value = 'views';
+      document.getElementById('sort').addEventListener('change', render);
+      const slider = document.getElementById('minviews');
+      slider.addEventListener('input', () => {
+        document.getElementById('minviews-val').textContent = fmt(slider.value);
+        render();
+      });
+
+      fetch(`/api/videos?category=${category}`)
+        .then(r => r.json())
+        .then(data => {
+          allVideos = Array.isArray(data) ? data : (data.videos || []);
+          const q = document.getElementById('quota');
+          if (data && data.quota_used !== undefined) {
+            q.innerHTML = `Quota: ${data.quota_used}` + (data.cached ? ' <span class="cached">• z cache</span>' : '');
+            q.style.display = 'block';
+          }
+          if (isViral) allVideos.sort((a,b) => (Number(b.views)||0) - (Number(a.views)||0));
+          render();
+        })
+        .catch(err => {
+          document.getElementById('videos').innerHTML = '<div class="state">❌ Błąd ładowania danych z API.</div>';
+          console.error(err);
+        });
+    }
+  </script>
+</body>
+</html>
