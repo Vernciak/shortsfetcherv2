@@ -416,3 +416,33 @@ select {
   .add-row { flex-direction: column; }
   .add-row select, #m-add { width: 100%; }
 }
+
+/* ---------- Przełącznik okresu ---------- */
+.seg {
+  display: inline-flex;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  overflow: hidden;
+}
+
+.seg button {
+  background: transparent;
+  color: var(--text-dim);
+  border: none;
+  padding: 7px 13px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border-right: 1px solid var(--border);
+}
+
+.seg button:last-child { border-right: none; }
+.seg button:hover { color: var(--text); background: var(--panel-hover); }
+
+.seg button.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}

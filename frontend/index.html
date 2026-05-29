@@ -47,6 +47,15 @@
         <input type="range" id="minviews" min="0" max="1000000" step="10000" value="0">
         <span class="minviews-val" id="minviews-val">0</span>
       </div>
+      <div class="group">
+        <label>Okres:</label>
+        <div class="seg" id="period">
+          <button data-d="1">24h</button>
+          <button data-d="7">7 dni</button>
+          <button data-d="30">30 dni</button>
+          <button data-d="0">Wszystko</button>
+        </div>
+      </div>
       <span class="count" id="count"></span>
     </div>
     <div id="videos">
@@ -197,12 +206,17 @@
     else {
       let allVideos = [];
       const isViral = category === "viral";
+      let periodDays = isViral ? 7 : 0;  // Viral domyślnie 7 dni, reszta wszystko
 
       function render() {
         const sortBy = document.getElementById('sort').value;
         const minViews = Number(document.getElementById('minviews').value);
         const container = document.getElementById('videos');
         let list = allVideos.filter(v => (Number(v.views)||0) >= minViews);
+        if (periodDays > 0) {
+          const cutoff = Date.now() - periodDays * 86400000;
+          list = list.filter(v => v.published && new Date(v.published).getTime() >= cutoff);
+        }
         list.sort((a,b) => sortBy === 'published'
           ? new Date(b.published) - new Date(a.published)
           : (Number(b[sortBy])||0) - (Number(a[sortBy])||0));
@@ -243,6 +257,18 @@
       slider.addEventListener('input', () => {
         document.getElementById('minviews-val').textContent = fmt(slider.value);
         render();
+      });
+
+      // Przyciski okresu
+      const periodBox = document.getElementById('period');
+      periodBox.querySelectorAll('button').forEach(b => {
+        if (Number(b.dataset.d) === periodDays) b.classList.add('active');
+        b.addEventListener('click', () => {
+          periodDays = Number(b.dataset.d);
+          periodBox.querySelectorAll('button').forEach(x => x.classList.remove('active'));
+          b.classList.add('active');
+          render();
+        });
       });
 
       fetch(`/api/videos?category=${category}`)
