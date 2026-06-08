@@ -480,3 +480,12 @@ select {
 }
 #t-load:hover { opacity: .85; }
 #t-load:disabled { opacity: .4; cursor: default; }
+
+#hits-videos, #t-videos {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 20px;
+  padding: 22px 24px 60px;
+  max-width: 1280px;
+  margin: 0 auto;
+}
