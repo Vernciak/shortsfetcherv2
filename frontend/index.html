@@ -18,6 +18,8 @@
     <nav id="nav">
       <a href="/" data-cat="main">Główna</a>
       <a href="/viral" data-cat="viral">🔥 Viral</a>
+      <a href="/hity" data-cat="hity">⚡ Hity</a>
+      <a href="/trendy" data-cat="trendy">🌍 Trendy</a>
       <a href="/fun" data-cat="fun">Zagranica 2</a>
       <a href="/zwierzeta" data-cat="zwierzeta">Zwierzęta</a>
       <a href="/nauka" data-cat="nauka">Nauka</a>
@@ -63,6 +65,49 @@
     </div>
   </div>
 
+  <!-- WIDOK HITY -->
+  <div id="view-hity" style="display:none">
+    <div class="controls">
+      <span class="hits-info">Shorty które <b>odskoczyły od mediany kanału</b> — świeże, min. 50k wyświetleń, ≥3× norma kanału</span>
+      <span class="count" id="hits-count"></span>
+    </div>
+    <div id="hits-videos">
+      <div class="state"><div class="spinner"></div>Szukam hitów…</div>
+    </div>
+  </div>
+
+  <!-- WIDOK TRENDY -->
+  <div id="view-trendy" style="display:none">
+    <div class="controls">
+      <div class="group">
+        <label for="t-region">Kraj:</label>
+        <select id="t-region">
+          <option value="PL">🇵🇱 Polska</option>
+          <option value="US">🇺🇸 USA</option>
+          <option value="GB">🇬🇧 UK</option>
+          <option value="ES">🇪🇸 Hiszpania</option>
+          <option value="MX">🇲🇽 Meksyk</option>
+          <option value="BR">🇧🇷 Brazylia</option>
+          <option value="DE">🇩🇪 Niemcy</option>
+          <option value="FR">🇫🇷 Francja</option>
+          <option value="IN">🇮🇳 Indie</option>
+          <option value="JP">🇯🇵 Japonia</option>
+        </select>
+      </div>
+      <div class="group">
+        <label for="t-category">Kategoria:</label>
+        <select id="t-category">
+          <option value="">Wszystkie</option>
+        </select>
+      </div>
+      <button id="t-load">Szukaj</button>
+      <span class="count" id="t-count"></span>
+    </div>
+    <div id="t-videos">
+      <div class="state">Wybierz kraj i kliknij Szukaj.</div>
+    </div>
+  </div>
+
   <!-- PANEL ZARZĄDZANIA -->
   <div id="view-manage" style="display:none">
     <div class="manage-wrap">
@@ -99,7 +144,7 @@
 
   <script>
     const path = window.location.pathname;
-    const valid = ["viral","nauka","zwierzeta","fun","k1","k2","k3","k4","k5","k6","manage"];
+    const valid = ["viral","hity","trendy","nauka","zwierzeta","fun","k1","k2","k3","k4","k5","k6","manage"];
     let category = "main";
     valid.forEach(c => { if (path === "/" + c) category = c; });
 
@@ -117,8 +162,119 @@
     const CAT_LABELS = {main:"Główna",fun:"Zagranica 2",zwierzeta:"Zwierzęta",nauka:"Nauka",
       k1:"K1",k2:"K2",k3:"K3",k4:"K4",k5:"K5",k6:"K6"};
 
+    function cardHTML(v, badge) {
+      const viral = (Number(v.views)||0) >= 100000;
+      const date = v.published ? new Date(v.published).toLocaleDateString('pl-PL') : '';
+      const extraBadge = badge ? `<span class="badge-extra">${badge}</span>` : '';
+      return `
+        <a class="title-link" href="${v.url}" target="_blank" rel="noopener">
+          <div class="thumb-wrap">
+            <img src="${v.thumbnail}" alt="" loading="lazy" />
+            ${viral ? '<span class="badge-viral">VIRAL</span>' : ''}
+            ${extraBadge}
+            <span class="badge-dur">${v.duration || ''}</span>
+          </div>
+        </a>
+        <div class="body">
+          <a class="title-link" href="${v.url}" target="_blank" rel="noopener"><h3>${v.title}</h3></a>
+          <div class="channel">${v.channel || 'Nieznany kanał'}</div>
+          <div class="stats">
+            <span>👁️ <b>${fmt(v.views)}</b></span>
+            <span>👍 <b>${fmt(v.likes)}</b></span>
+            ${date ? `<span class="date">🗓️ ${date}</span>` : ''}
+          </div>
+        </div>`;
+    }
+
+    function renderCards(list, containerId, countId) {
+      const container = document.getElementById(containerId);
+      document.getElementById(countId).textContent =
+        list.length + (list.length === 1 ? ' short' : ' shortów');
+      if (!list.length) { container.innerHTML = '<div class="state">😔 Brak wyników.</div>'; return; }
+      container.innerHTML = '';
+      list.forEach((v, i) => {
+        const div = document.createElement('div');
+        div.className = 'video';
+        div.style.animationDelay = Math.min(i*30, 400) + 'ms';
+        const badge = v.multiplier ? `×${v.multiplier}` : '';
+        div.innerHTML = cardHTML(v, badge);
+        container.appendChild(div);
+      });
+    }
+
+    // ---------- TRYB: HITY ----------
+    if (category === "hity") {
+      document.getElementById('view-feed').style.display = 'none';
+      document.getElementById('view-hity').style.display = 'block';
+
+      fetch('/api/hits')
+        .then(r => r.json())
+        .then(data => {
+          const videos = data.videos || [];
+          const q = document.getElementById('quota');
+          if (data.quota_used !== undefined) {
+            q.innerHTML = `Quota: ${data.quota_used}` + (data.cached ? ' <span class="cached">• z cache</span>' : '');
+            q.style.display = 'block';
+          }
+          renderCards(videos, 'hits-videos', 'hits-count');
+        })
+        .catch(() => {
+          document.getElementById('hits-videos').innerHTML = '<div class="state">❌ Błąd ładowania hitów.</div>';
+        });
+    }
+
+    // ---------- TRYB: TRENDY ----------
+    else if (category === "trendy") {
+      document.getElementById('view-feed').style.display = 'none';
+      document.getElementById('view-trendy').style.display = 'block';
+
+      const regionSel = document.getElementById('t-region');
+      const catSel = document.getElementById('t-category');
+      const loadBtn = document.getElementById('t-load');
+
+      async function loadCategories(region) {
+        catSel.innerHTML = '<option value="">Wszystkie</option>';
+        try {
+          const r = await fetch(`/api/categories?region=${region}`);
+          const data = await r.json();
+          (data.categories || []).forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c.id;
+            opt.textContent = c.title;
+            catSel.appendChild(opt);
+          });
+        } catch(e) {}
+      }
+
+      async function loadTrending() {
+        const region = regionSel.value;
+        const catId = catSel.value;
+        document.getElementById('t-videos').innerHTML = '<div class="state"><div class="spinner"></div>Ładowanie trendów…</div>';
+        document.getElementById('t-count').textContent = '';
+        loadBtn.disabled = true;
+        try {
+          const r = await fetch(`/api/trending?region=${region}&category_id=${catId}`);
+          const data = await r.json();
+          const q = document.getElementById('quota');
+          if (data.quota_used !== undefined) {
+            q.innerHTML = `Quota: ${data.quota_used}` + (data.cached ? ' <span class="cached">• z cache</span>' : '');
+            q.style.display = 'block';
+          }
+          renderCards(data.videos || [], 't-videos', 't-count');
+        } catch(e) {
+          document.getElementById('t-videos').innerHTML = '<div class="state">❌ Błąd ładowania trendów.</div>';
+        } finally {
+          loadBtn.disabled = false;
+        }
+      }
+
+      regionSel.addEventListener('change', () => loadCategories(regionSel.value));
+      loadBtn.addEventListener('click', loadTrending);
+      loadCategories(regionSel.value);
+    }
+
     // ---------- TRYB: PANEL ZARZĄDZANIA ----------
-    if (category === "manage") {
+    else if (category === "manage") {
       document.getElementById('view-feed').style.display = 'none';
       document.getElementById('view-manage').style.display = 'block';
 
@@ -228,25 +384,7 @@
           const div = document.createElement('div');
           div.className = 'video';
           div.style.animationDelay = Math.min(i*30, 400) + 'ms';
-          const viral = (Number(v.views)||0) >= 100000;
-          const date = v.published ? new Date(v.published).toLocaleDateString('pl-PL') : '';
-          div.innerHTML = `
-            <a class="title-link" href="${v.url}" target="_blank" rel="noopener">
-              <div class="thumb-wrap">
-                <img src="${v.thumbnail}" alt="" loading="lazy" />
-                ${viral ? '<span class="badge-viral">VIRAL</span>' : ''}
-                <span class="badge-dur">${v.duration || ''}</span>
-              </div>
-            </a>
-            <div class="body">
-              <a class="title-link" href="${v.url}" target="_blank" rel="noopener"><h3>${v.title}</h3></a>
-              <div class="channel">${v.channel || 'Nieznany kanał'}</div>
-              <div class="stats">
-                <span>👁️ <b>${fmt(v.views)}</b></span>
-                <span>👍 <b>${fmt(v.likes)}</b></span>
-                ${date ? `<span class="date">🗓️ ${date}</span>` : ''}
-              </div>
-            </div>`;
+          div.innerHTML = cardHTML(v, '');
           container.appendChild(div);
         });
       }

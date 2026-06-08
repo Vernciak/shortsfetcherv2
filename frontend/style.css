@@ -446,3 +446,37 @@ select {
   color: var(--accent);
   font-weight: 600;
 }
+
+/* Hity i Trendy */
+.hits-info {
+  color: var(--text-dim);
+  font-size: .85rem;
+}
+
+.badge-extra {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  background: rgba(255, 90, 54, 0.85);
+  color: #fff;
+  font-size: .7rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 6px;
+  letter-spacing: .03em;
+}
+
+#view-trendy .controls { gap: 10px; flex-wrap: wrap; align-items: center; }
+#t-load {
+  padding: 6px 18px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: .9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity .15s;
+}
+#t-load:hover { opacity: .85; }
+#t-load:disabled { opacity: .4; cursor: default; }
