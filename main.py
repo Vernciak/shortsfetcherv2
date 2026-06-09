@@ -48,8 +48,8 @@ COMMENTARY_CACHE_TTL = 7200
 
 # Parametry endpointu AI (Gemini)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-# Model — 2.0-flash-lite jest GA i stabilniejszy niż 2.5-flash-lite (preview)
-GEMINI_MODEL = "gemini-2.0-flash-lite"
+# Model — 2.5-flash-lite jest GA; 503 to chwilowe przeciążenie (obsłużone przez retry)
+GEMINI_MODEL = "gemini-2.5-flash-lite"
 # Minimalny confidence Gemini żeby short trafił do wyników (0-100)
 AI_MIN_CONFIDENCE = 60
 # TTL cache wyników AI (2h)
