@@ -51,62 +51,6 @@ EDUTAINMENT_CURIOSITY = {
     "ar": ["سر", "حيلة", "هاك", "الأفضل", "الأكثر خطورة", "عبقري", "لا أحد يعرف", "مخفي", "الحقيقة", "مثير للدهشة", "لا يصدق", "يجب أن تعرف"],
 }
 
-# ---------------------------------------------------------------------------
-# ANTY-WZORCE — Etap A
-# ---------------------------------------------------------------------------
-
-# Twardy odrzut — te wzorce nigdy nie są commentary (klipy, zwiastuny, oficjalne produkcje).
-# Sprawdzane case-insensitive w tytule LUB opisie (po normalizacji Unicode).
-HARD_REJECT_PATTERNS = {
-    "en": ["official trailer", "official clip", "clip from", "official video", "teaser trailer",
-           "full episode", "trailer"],
-    "pl": ["oficjalny zwiastun", "oficjalny trailer", "zwiastun", "klip oficjalny",
-           "pełny odcinek", "teaser"],
-    "ru": ["официальный трейлер", "официальный клип", "трейлер", "тизер",
-           "полный эпизод", "официальное видео"],
-    "es": ["tráiler oficial", "clip oficial", "trailer oficial", "avance oficial",
-           "episodio completo", "teaser", "trailer"],
-    "pt": ["trailer oficial", "clipe oficial", "trailer dublado", "dublado", "legendado",
-           "episódio completo", "teaser", "trailer"],
-    "de": ["offizieller trailer", "offizieller clip", "trailer", "teaser",
-           "ganze folge", "offizielles video"],
-    "fr": ["bande-annonce officielle", "clip officiel", "trailer", "teaser",
-           "épisode complet", "vidéo officielle"],
-    "it": ["trailer ufficiale", "clip ufficiale", "trailer", "teaser",
-           "episodio completo", "video ufficiale"],
-    "uk": ["офіційний трейлер", "офіційний кліп", "трейлер", "тизер",
-           "повний епізод", "офіційне відео"],
-    "tr": ["resmi fragman", "resmi klip", "fragman", "tanıtım",
-           "tam bölüm", "teaser", "trailer"],
-    "id": ["trailer resmi", "klip resmi", "trailer", "teaser",
-           "episode penuh", "video resmi"],
-    "hi": ["आधिकारिक ट्रेलर", "ट्रेलर", "टीज़र", "पूरा एपिसोड",
-           "official trailer", "trailer"],
-    "ar": ["الإعلان الرسمي", "مقطع رسمي", "تريلر", "إعلان", "حلقة كاملة"],
-    # Angielskie warianty pisowni bez cudzysłowu obejmują wszystkie języki
-    "_universal": ["subtitulado", "doblado", "dubbed", "subbed"],
-}
-
-# Wzorce produkcji/IP w tytule LUB nazwie kanału — mocny minus (-15 pkt).
-# Dopasowanie substring, case-insensitive.
-PRODUCTION_PATTERNS = [
-    "studios", "pictures", "movies", "official", "dc comics", "marvel",
-    "netflix", "disney", "hbo", "amazon prime", "paramount", "universal pictures",
-    "20th century", "warner bros", "sony pictures", "lionsgate",
-    "simpsons", "family guy", "south park",
-]
-
-# Sygnały reuploadu w opisie — lekki minus (-5 pkt).
-REUPLOAD_SIGNALS = [
-    "copyright disclaimer",
-    "section 107",
-    "no copyright infringement intended",
-    "no copyright infringement",
-    "fair use",
-]
-
-# ---------------------------------------------------------------------------
-
 ALL_CATEGORIES = [QUESTION_HOOKS, REACTION_COMMENTARY, EDUTAINMENT_CURIOSITY]
 LANGUAGES = list(QUESTION_HOOKS.keys())
 
@@ -117,51 +61,20 @@ LANG_FLAGS = {
 }
 
 
-import unicodedata
-
-
-def _normalize(text):
-    """Lowercase + NFD normalizacja, żeby diakrytyki i cyrylica działały poprawnie."""
-    return unicodedata.normalize("NFD", text).lower()
-
-
-def is_hard_reject(title, description, channel_name=""):
-    """Zwraca True jeśli tytuł lub opis zawiera wzorzec twardego odrzutu.
-
-    Używane przed scoringiem — gdy True, short jest pomijany (chyba że kanał
-    jest oznaczony is_commentary=True, co sprawdzane jest w wywołującym kodzie).
-    """
-    text = _normalize(title + " " + (description or ""))
-    for lang_patterns in HARD_REJECT_PATTERNS.values():
-        for pat in lang_patterns:
-            if _normalize(pat) in text:
-                return True
-    return False
-
-
-def score_commentary(title, description, duration_seconds, is_commentary_channel,
-                     caption=None, require_captions=False):
+def score_commentary(title, description, duration_seconds, is_commentary_channel):
     """Oblicza commentary_score i wykrywa język.
 
     Returns:
         (score: int, detected_lang: str)
 
-    Progi:
+    Progi (łatwe do zmiany poprzez stałe w main.py):
         - +10 za każdą kategorię z trafieniem (max 3 kategorie = 30 pkt)
         - +10 za czas trwania 15–50 s (typowy profil narracyjny)
         - +5 za czas 8–14 s
         - +3 za czas 51–120 s
         - +30 za kanał oznaczony jako commentary (silny priorytet)
-        Etap A anty-wzorce (pomijane gdy is_commentary_channel=True):
-        - -15 za wzorce produkcji/IP w tytule lub nazwie kanału
-        - -5 za sygnały reuploadu w opisie
-        Etap B napisy (pomijane gdy is_commentary_channel=True):
-        - -20 gdy require_captions=True i caption="false"
     """
-    title_norm = _normalize(title)
-    desc_norm = _normalize(description or "")
-    text = (title_norm + " " + desc_norm)[:3000]
-
+    text = (title + " " + (description or ""))[:3000].lower()
     lang_hits = {lang: 0 for lang in LANGUAGES}
     total_score = 0
 
@@ -169,7 +82,7 @@ def score_commentary(title, description, duration_seconds, is_commentary_channel
         matched = False
         for lang, patterns in cat_dict.items():
             for pat in patterns:
-                if _normalize(pat) in text:
+                if pat in text:
                     lang_hits[lang] += 1
                     matched = True
                     break
@@ -185,22 +98,6 @@ def score_commentary(title, description, duration_seconds, is_commentary_channel
 
     if is_commentary_channel:
         total_score += 30
-    else:
-        # Etap A — anty-wzorce produkcji/IP (-15)
-        for pat in PRODUCTION_PATTERNS:
-            if _normalize(pat) in title_norm:
-                total_score -= 15
-                break
-
-        # Etap A — sygnały reuploadu w opisie (-5)
-        for pat in REUPLOAD_SIGNALS:
-            if _normalize(pat) in desc_norm:
-                total_score -= 5
-                break
-
-        # Etap B — brak napisów (-20)
-        if require_captions and caption == "false":
-            total_score -= 20
 
     best_lang = max(lang_hits, key=lambda l: lang_hits[l])
     detected = best_lang if lang_hits[best_lang] > 0 else "?"
