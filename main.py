@@ -4,6 +4,7 @@ import os, json, requests, time, statistics
 from dotenv import load_dotenv
 import isodate
 import db
+from commentary_patterns import score_commentary, LANG_FLAGS
 
 load_dotenv()
 
@@ -33,6 +34,17 @@ HITS_CACHE_TTL = 21600
 
 # Cache kategorii YT (24h)
 CATEGORIES_CACHE_TTL = 86400
+
+# Parametry endpointu Commentary
+# Kraje do przeszukania trendów (1 jednostka API per kraj)
+COMMENTARY_COUNTRIES = ["US", "GB", "RU", "BR", "ES", "MX", "DE", "FR", "IT", "PL"]
+# Kategorie YT z których pobieramy dodatkowe trendy (1 jednostka per kraj×kategoria)
+# 24=Entertainment, 22=People&Blogs, 28=Science&Tech, 26=Howto&Style
+COMMENTARY_EXTRA_CATEGORIES = ["24", "22", "28", "26"]
+# Minimalny wynik żeby short trafił do wyników (łatwy do podkręcenia)
+COMMENTARY_MIN_SCORE = 10
+# TTL cache commentary — droższe przez wiele krajów, więc dłuższe (2h)
+COMMENTARY_CACHE_TTL = 7200
 
 _cache = {}
 
@@ -74,6 +86,7 @@ except Exception as e:
 @app.route('/viral')
 @app.route('/hity')
 @app.route('/trendy')
+@app.route('/commentary')
 @app.route('/manage')
 def index():
     return send_from_directory('frontend', 'index.html')
@@ -153,17 +166,24 @@ def _parse_video_details(items):
         if total_seconds == 0 or total_seconds > SHORT_MAX_SECONDS:
             continue
         mm, ss = total_seconds // 60, total_seconds % 60
+        snip = details["snippet"]
+        stats = details["statistics"]
         videos.append({
-            "title": details["snippet"]["title"],
-            "channel": details["snippet"].get("channelTitle", "Nieznany kanał"),
-            "channel_id": details["snippet"].get("channelId", ""),
-            "published": details["snippet"].get("publishedAt", ""),
+            "id": details["id"],
+            "title": snip["title"],
+            "channel": snip.get("channelTitle", "Nieznany kanał"),
+            "channel_id": snip.get("channelId", ""),
+            "published": snip.get("publishedAt", ""),
             "url": f"https://www.youtube.com/shorts/{details['id']}",
-            "thumbnail": details["snippet"]["thumbnails"]["medium"]["url"],
-            "views": int(details["statistics"].get("viewCount", 0)),
-            "likes": int(details["statistics"].get("likeCount", 0)),
+            "thumbnail": snip["thumbnails"]["medium"]["url"],
+            "views": int(stats.get("viewCount", 0)),
+            "likes": int(stats.get("likeCount", 0)),
+            "comment_count": int(stats.get("commentCount", 0)),
             "duration": f"{mm}:{str(ss).zfill(2)}",
-            "tags": details["snippet"].get("tags", []),
+            "duration_seconds": total_seconds,
+            "tags": snip.get("tags", []),
+            "description": snip.get("description", "")[:500],
+            "audio_lang": snip.get("defaultAudioLanguage") or snip.get("defaultLanguage") or "",
         })
     return videos
 
@@ -373,6 +393,157 @@ def get_trending():
     _cache[cache_key] = (now, payload)
     print(f"🌍 Trendy {region}: {len(videos)} shortów, ~{quota_used} quota")
     return jsonify(payload)
+
+
+@app.route('/api/commentary')
+def get_commentary():
+    now = time.time()
+    cached = _cache.get("commentary")
+    if cached and now - cached[0] < COMMENTARY_CACHE_TTL:
+        payload = dict(cached[1])
+        payload["cached"] = True
+        return jsonify(payload)
+
+    if not API_KEYS:
+        return jsonify({"videos": [], "quota_used": 0, "cached": False})
+
+    try:
+        channels_with_flags = db.get_all_channels_with_flags()
+    except Exception as e:
+        return jsonify({"videos": [], "quota_used": 0, "cached": False, "error": str(e)})
+
+    key_idx = [0]
+    quota_used = 0
+    seen_ids = set()
+    pool = []
+
+    def add_to_pool(videos_list):
+        for v in videos_list:
+            vid = v.get("id", v.get("url", ""))
+            if vid and vid not in seen_ids:
+                seen_ids.add(vid)
+                pool.append(v)
+
+    # Źródło 1: moje kanały (ostatnie 20 uploadów jak w hitach)
+    commentary_channel_ids = {ch for ch, flag in channels_with_flags if flag}
+    all_channel_ids = [ch for ch, _ in channels_with_flags]
+
+    channel_video_ids = {}
+    for channel_id in all_channel_ids:
+        uploads_playlist_id = "UU" + channel_id[2:]
+        attempts = 0
+        while attempts < len(API_KEYS):
+            try:
+                url = ("https://www.googleapis.com/youtube/v3/playlistItems"
+                       f"?part=contentDetails&playlistId={uploads_playlist_id}"
+                       f"&maxResults=20"
+                       f"&key={API_KEYS[key_idx[0] % len(API_KEYS)]}")
+                res = requests.get(url, timeout=10).json()
+                quota_used += 1
+                if 'error' in res:
+                    key_idx[0] += 1
+                    attempts += 1
+                    continue
+                ids = [i["contentDetails"]["videoId"]
+                       for i in res.get("items", [])
+                       if i["contentDetails"].get("videoId")]
+                channel_video_ids[channel_id] = ids
+                break
+            except Exception as e:
+                print(f"Błąd playlistItems commentary {channel_id}: {e}")
+                key_idx[0] += 1
+                attempts += 1
+                time.sleep(0.3)
+
+    all_ids = [vid for ids in channel_video_ids.values() for vid in ids]
+    channel_videos, q = _fetch_video_details_batch(all_ids, key_idx)
+    quota_used += q
+    add_to_pool(channel_videos)
+
+    # Źródła 2+3: trendy per kraj + trendy per kraj × kategoria
+    def fetch_trending_page(region, category_id=""):
+        nonlocal quota_used
+        attempts = 0
+        while attempts < len(API_KEYS):
+            try:
+                url = ("https://www.googleapis.com/youtube/v3/videos"
+                       f"?part=statistics,snippet,contentDetails"
+                       f"&chart=mostPopular&regionCode={region}&maxResults=50"
+                       + (f"&videoCategoryId={category_id}" if category_id else "")
+                       + f"&key={API_KEYS[key_idx[0] % len(API_KEYS)]}")
+                res = requests.get(url, timeout=10).json()
+                quota_used += 1
+                if 'error' in res:
+                    key_idx[0] += 1
+                    attempts += 1
+                    continue
+                return _parse_video_details(res.get("items", []))
+            except Exception as e:
+                print(f"Błąd trending commentary {region}/{category_id}: {e}")
+                key_idx[0] += 1
+                attempts += 1
+                time.sleep(0.3)
+        return []
+
+    for country in COMMENTARY_COUNTRIES:
+        add_to_pool(fetch_trending_page(country))
+        for cat_id in COMMENTARY_EXTRA_CATEGORIES:
+            add_to_pool(fetch_trending_page(country, cat_id))
+
+    # Scoring
+    cutoff_ts = now - 86400 * 90  # odrzucamy filmy starsze niż 90 dni
+    from datetime import datetime, timezone
+
+    result = []
+    for v in pool:
+        pub_ts = 0
+        try:
+            pub_ts = datetime.fromisoformat(
+                v["published"].replace("Z", "+00:00")
+            ).timestamp()
+        except Exception:
+            pass
+        if pub_ts and pub_ts < cutoff_ts:
+            continue
+
+        is_commentary_ch = v.get("channel_id", "") in commentary_channel_ids
+        score, lang = score_commentary(
+            v["title"],
+            v.get("description", ""),
+            v.get("duration_seconds", 0),
+            is_commentary_ch,
+        )
+        if score < COMMENTARY_MIN_SCORE:
+            continue
+
+        hours_since = max((now - pub_ts) / 3600, 0.5) if pub_ts else None
+        vph = round(v["views"] / hours_since, 1) if hours_since else None
+        eng = round((v["likes"] + v["comment_count"]) / v["views"] * 100, 2) if v["views"] > 0 else 0
+
+        v["commentary_score"] = score
+        v["lang"] = lang
+        v["lang_flag"] = LANG_FLAGS.get(lang, "🌐")
+        v["vph"] = vph
+        v["engagement_rate"] = eng
+        result.append(v)
+
+    result.sort(key=lambda v: v["commentary_score"], reverse=True)
+    payload = {"videos": result, "quota_used": quota_used, "cached": False}
+    _cache["commentary"] = (now, payload)
+    print(f"🎙️ Commentary: {len(result)} wyników (pula {len(pool)}), ~{quota_used} quota")
+    return jsonify(payload)
+
+
+@app.route('/api/channels/<channel_id>/commentary', methods=['PUT'])
+def api_set_commentary(channel_id):
+    data = request.get_json(silent=True) or {}
+    value = bool(data.get("value", False))
+    try:
+        updated = db.set_channel_commentary(channel_id, value)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    _cache.pop("commentary", None)
+    return jsonify({"ok": True, "updated": updated, "is_commentary": value})
 
 
 @app.route('/api/videos')

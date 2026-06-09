@@ -20,6 +20,7 @@
       <a href="/viral" data-cat="viral">🔥 Viral</a>
       <a href="/hity" data-cat="hity">⚡ Hity</a>
       <a href="/trendy" data-cat="trendy">🌍 Trendy</a>
+      <a href="/commentary" data-cat="commentary">🎙️ Commentary</a>
       <a href="/fun" data-cat="fun">Zagranica 2</a>
       <a href="/zwierzeta" data-cat="zwierzeta">Zwierzęta</a>
       <a href="/nauka" data-cat="nauka">Nauka</a>
@@ -108,6 +109,33 @@
     </div>
   </div>
 
+  <!-- WIDOK COMMENTARY -->
+  <div id="view-commentary" style="display:none">
+    <div class="controls">
+      <div class="group">
+        <label for="c-sort">Sortuj:</label>
+        <select id="c-sort">
+          <option value="commentary_score">Score</option>
+          <option value="vph">VPH (wzrost/h)</option>
+          <option value="engagement_rate">Engagement</option>
+          <option value="views">Wyświetlenia</option>
+          <option value="published">Najnowsze</option>
+        </select>
+      </div>
+      <div class="group">
+        <label for="c-lang">Język:</label>
+        <select id="c-lang">
+          <option value="">Wszystkie</option>
+        </select>
+      </div>
+      <div class="c-hint" id="c-hint"></div>
+      <span class="count" id="c-count"></span>
+    </div>
+    <div id="c-videos">
+      <div class="state"><div class="spinner"></div>Szukam commentary…</div>
+    </div>
+  </div>
+
   <!-- PANEL ZARZĄDZANIA -->
   <div id="view-manage" style="display:none">
     <div class="manage-wrap">
@@ -144,7 +172,7 @@
 
   <script>
     const path = window.location.pathname;
-    const valid = ["viral","hity","trendy","nauka","zwierzeta","fun","k1","k2","k3","k4","k5","k6","manage"];
+    const valid = ["viral","hity","trendy","commentary","nauka","zwierzeta","fun","k1","k2","k3","k4","k5","k6","manage"];
     let category = "main";
     valid.forEach(c => { if (path === "/" + c) category = c; });
 
@@ -166,23 +194,32 @@
       const viral = (Number(v.views)||0) >= 100000;
       const date = v.published ? new Date(v.published).toLocaleDateString('pl-PL') : '';
       const extraBadge = badge ? `<span class="badge-extra">${badge}</span>` : '';
+      const langBadge = v.lang && v.lang !== '?' ? `<span class="badge-lang">${v.lang_flag || ''} ${v.lang}</span>` : '';
+      const scoreBadge = v.commentary_score != null ? `<span class="badge-score">★${v.commentary_score}</span>` : '';
+      const vphStr = v.vph != null ? `<span title="wyświetlenia/h">⚡ <b>${fmt(v.vph)}/h</b></span>` : '';
+      const engStr = v.engagement_rate != null ? `<span title="engagement">💬 <b>${v.engagement_rate}%</b></span>` : '';
+      const descSnippet = v.description ? `<div class="card-desc">${v.description.slice(0,120).replace(/</g,'&lt;')}</div>` : '';
       return `
         <a class="title-link" href="${v.url}" target="_blank" rel="noopener">
           <div class="thumb-wrap">
             <img src="${v.thumbnail}" alt="" loading="lazy" />
             ${viral ? '<span class="badge-viral">VIRAL</span>' : ''}
             ${extraBadge}
+            ${scoreBadge}
             <span class="badge-dur">${v.duration || ''}</span>
           </div>
         </a>
         <div class="body">
           <a class="title-link" href="${v.url}" target="_blank" rel="noopener"><h3>${v.title}</h3></a>
-          <div class="channel">${v.channel || 'Nieznany kanał'}</div>
+          <div class="channel">${v.channel || 'Nieznany kanał'} ${langBadge}</div>
           <div class="stats">
             <span>👁️ <b>${fmt(v.views)}</b></span>
             <span>👍 <b>${fmt(v.likes)}</b></span>
+            ${vphStr}
+            ${engStr}
             ${date ? `<span class="date">🗓️ ${date}</span>` : ''}
           </div>
+          ${descSnippet}
         </div>`;
     }
 
@@ -202,8 +239,66 @@
       });
     }
 
+    // ---------- TRYB: COMMENTARY ----------
+    if (category === "commentary") {
+      document.getElementById('view-feed').style.display = 'none';
+      document.getElementById('view-commentary').style.display = 'block';
+
+      const sortSel = document.getElementById('c-sort');
+      const langSel = document.getElementById('c-lang');
+      const hint = document.getElementById('c-hint');
+      let allCommentary = [];
+
+      function renderCommentary() {
+        const sortBy = sortSel.value;
+        const langFilter = langSel.value;
+        let list = langFilter ? allCommentary.filter(v => v.lang === langFilter) : allCommentary.slice();
+        list.sort((a, b) => {
+          if (sortBy === 'published') return new Date(b.published) - new Date(a.published);
+          if (sortBy === 'commentary_score') return (b.commentary_score||0) - (a.commentary_score||0);
+          if (sortBy === 'vph') return (b.vph||0) - (a.vph||0);
+          if (sortBy === 'engagement_rate') return (b.engagement_rate||0) - (a.engagement_rate||0);
+          return (Number(b[sortBy])||0) - (Number(a[sortBy])||0);
+        });
+        renderCards(list, 'c-videos', 'c-count');
+        if (!list.length && allCommentary.length > 0) {
+          hint.textContent = 'Brak wyników dla tego języka.';
+        } else if (!allCommentary.length) {
+          hint.innerHTML = 'Mało wyników? Oznacz kanały jako commentary w <a href="/manage">⚙️ Zarządzaj</a> lub obniż próg COMMENTARY_MIN_SCORE w main.py.';
+        } else {
+          hint.textContent = '';
+        }
+      }
+
+      fetch('/api/commentary')
+        .then(r => r.json())
+        .then(data => {
+          allCommentary = data.videos || [];
+          const q = document.getElementById('quota');
+          if (data.quota_used !== undefined) {
+            q.innerHTML = `Quota: ${data.quota_used}` + (data.cached ? ' <span class="cached">• z cache</span>' : '');
+            q.style.display = 'block';
+          }
+          // Wypełnij dropdown języków
+          const langs = [...new Set(allCommentary.map(v => v.lang).filter(l => l && l !== '?'))].sort();
+          langs.forEach(l => {
+            const opt = document.createElement('option');
+            opt.value = l;
+            opt.textContent = (allCommentary.find(v => v.lang === l)?.lang_flag || '') + ' ' + l.toUpperCase();
+            langSel.appendChild(opt);
+          });
+          renderCommentary();
+        })
+        .catch(() => {
+          document.getElementById('c-videos').innerHTML = '<div class="state">❌ Błąd ładowania commentary.</div>';
+        });
+
+      sortSel.addEventListener('change', renderCommentary);
+      langSel.addEventListener('change', renderCommentary);
+    }
+
     // ---------- TRYB: HITY ----------
-    if (category === "hity") {
+    else if (category === "hity") {
       document.getElementById('view-feed').style.display = 'none';
       document.getElementById('view-hity').style.display = 'block';
 
@@ -304,13 +399,35 @@
           ch.forEach(c => {
             const row = document.createElement('div');
             row.className = 'm-item';
+            const isComm = c.is_commentary ? 'checked' : '';
             row.innerHTML = `
               <div class="m-item-info">
                 <div class="m-item-title">${c.title || '(bez nazwy)'}</div>
                 <div class="m-item-id">${c.channel_id}</div>
               </div>
+              <label class="m-toggle" title="Oznacz jako kanał commentary (zwiększa score w zakładce 🎙️)">
+                <input type="checkbox" class="m-comm-chk" data-chid="${c.channel_id}" ${isComm}>
+                <span class="m-toggle-label">🎙️</span>
+              </label>
               <button class="m-del" data-id="${c.id}">Usuń</button>`;
             listEl.appendChild(row);
+          });
+          listEl.querySelectorAll('.m-comm-chk').forEach(chk => {
+            chk.addEventListener('change', async () => {
+              const chid = chk.dataset.chid;
+              const val = chk.checked;
+              try {
+                await fetch(`/api/channels/${encodeURIComponent(chid)}/commentary`, {
+                  method: 'PUT',
+                  headers: {'Content-Type':'application/json'},
+                  body: JSON.stringify({value: val})
+                });
+                showMsg(`🎙️ ${val ? 'Oznaczono' : 'Odznaczono'} jako commentary`, true);
+              } catch(e) {
+                showMsg('Błąd zapisu flagi commentary', false);
+                chk.checked = !val;
+              }
+            });
           });
           listEl.querySelectorAll('.m-del').forEach(b => {
             b.addEventListener('click', async () => {
