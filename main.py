@@ -36,8 +36,9 @@ HITS_CACHE_TTL = 21600
 CATEGORIES_CACHE_TTL = 86400
 
 # Parametry endpointu Commentary
-# Kraje do przeszukania trendów (1 jednostka API per kraj)
-COMMENTARY_COUNTRIES = ["US", "GB", "RU", "BR", "ES", "MX", "DE", "FR", "IT", "PL"]
+# Kraje do przeszukania trendów (1 jednostka API per kraj, ×5 z kategoriami)
+COMMENTARY_COUNTRIES = ["US", "GB", "RU", "BR", "ES", "MX", "DE", "FR", "IT", "PL",
+                        "IN", "PT", "AR", "CO", "TR", "ID", "JP", "KR", "CA", "AU"]
 # Kategorie YT z których pobieramy dodatkowe trendy (1 jednostka per kraj×kategoria)
 # 24=Entertainment, 22=People&Blogs, 28=Science&Tech, 26=Howto&Style
 COMMENTARY_EXTRA_CATEGORIES = ["24", "22", "28", "26"]
