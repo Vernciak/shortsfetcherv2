@@ -481,7 +481,7 @@ select {
 #t-load:hover { opacity: .85; }
 #t-load:disabled { opacity: .4; cursor: default; }
 
-#hits-videos, #t-videos, #c-videos {
+#hits-videos, #t-videos, #c-videos, #ai-videos {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
   gap: 20px;
