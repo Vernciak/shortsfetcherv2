@@ -45,10 +45,9 @@ COMMENTARY_COUNTRIES = ["US", "GB", "RU", "BR", "ES", "MX", "DE", "FR", "IT", "P
 # 24=Entertainment, 22=People&Blogs, 28=Science&Tech, 26=Howto&Style
 COMMENTARY_EXTRA_CATEGORIES = ["24", "22", "28", "26"]
 # Minimalny wynik żeby short trafił do wyników.
-# Po dodaniu anty-wzorców i filtra napisów rekomendowane: 20
 # Rozkład punktów: max pozytywne = 30 (wzorce) + 10 (czas) + 30 (kanał) = 70
 # Kary: -15 IP/studio, -5 reupload, -20 brak napisów (gdy REQUIRE_CAPTIONS=True)
-COMMENTARY_MIN_SCORE = 20
+COMMENTARY_MIN_SCORE = 15
 # TTL cache commentary — droższe przez wiele krajów, więc dłuższe (2h)
 COMMENTARY_CACHE_TTL = 7200
 
