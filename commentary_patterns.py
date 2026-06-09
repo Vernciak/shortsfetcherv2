@@ -58,34 +58,42 @@ EDUTAINMENT_CURIOSITY = {
 # Twardy odrzut — te wzorce nigdy nie są commentary (klipy, zwiastuny, oficjalne produkcje).
 # Sprawdzane case-insensitive w tytule LUB opisie (po normalizacji Unicode).
 HARD_REJECT_PATTERNS = {
-    # Tylko wieloczłonowe frazy — unikamy fałszywych trafień na "trailer" solo
     "en": ["official trailer", "official clip", "clip from", "official video", "teaser trailer",
-           "full episode"],
-    "pl": ["oficjalny zwiastun", "oficjalny trailer", "klip oficjalny", "pełny odcinek"],
-    "ru": ["официальный трейлер", "официальный клип", "полный эпизод", "официальное видео"],
+           "full episode", "trailer"],
+    "pl": ["oficjalny zwiastun", "oficjalny trailer", "zwiastun", "klip oficjalny",
+           "pełny odcinek", "teaser"],
+    "ru": ["официальный трейлер", "официальный клип", "трейлер", "тизер",
+           "полный эпизод", "официальное видео"],
     "es": ["tráiler oficial", "clip oficial", "trailer oficial", "avance oficial",
-           "episodio completo"],
+           "episodio completo", "teaser", "trailer"],
     "pt": ["trailer oficial", "clipe oficial", "trailer dublado", "dublado", "legendado",
-           "episódio completo"],
-    "de": ["offizieller trailer", "offizieller clip", "ganze folge", "offizielles video"],
-    "fr": ["bande-annonce officielle", "clip officiel", "épisode complet", "vidéo officielle"],
-    "it": ["trailer ufficiale", "clip ufficiale", "episodio completo", "video ufficiale"],
-    "uk": ["офіційний трейлер", "офіційний кліп", "повний епізод", "офіційне відео"],
-    "tr": ["resmi fragman", "resmi klip", "tam bölüm"],
-    "id": ["trailer resmi", "klip resmi", "episode penuh", "video resmi"],
-    "hi": ["आधिकारिक ट्रेलर", "official trailer"],
-    "ar": ["الإعلان الرسمي", "مقطع رسمي", "حلقة كاملة"],
+           "episódio completo", "teaser", "trailer"],
+    "de": ["offizieller trailer", "offizieller clip", "trailer", "teaser",
+           "ganze folge", "offizielles video"],
+    "fr": ["bande-annonce officielle", "clip officiel", "trailer", "teaser",
+           "épisode complet", "vidéo officielle"],
+    "it": ["trailer ufficiale", "clip ufficiale", "trailer", "teaser",
+           "episodio completo", "video ufficiale"],
+    "uk": ["офіційний трейлер", "офіційний кліп", "трейлер", "тизер",
+           "повний епізод", "офіційне відео"],
+    "tr": ["resmi fragman", "resmi klip", "fragman", "tanıtım",
+           "tam bölüm", "teaser", "trailer"],
+    "id": ["trailer resmi", "klip resmi", "trailer", "teaser",
+           "episode penuh", "video resmi"],
+    "hi": ["आधिकारिक ट्रेलर", "ट्रेलर", "टीज़र", "पूरा एपिसोड",
+           "official trailer", "trailer"],
+    "ar": ["الإعلان الرسمي", "مقطع رسمي", "تريلر", "إعلان", "حلقة كاملة"],
+    # Angielskie warianty pisowni bez cudzysłowu obejmują wszystkie języki
     "_universal": ["subtitulado", "doblado", "dubbed", "subbed"],
 }
 
-# Wzorce produkcji/IP w tytule — mocny minus (-15 pkt).
-# Celowo BEZ "official" (zbyt wiele legalnych kanałów ma to w nazwie).
-# Dopasowanie substring, case-insensitive, tylko w TYTULE (nie opisie).
+# Wzorce produkcji/IP w tytule LUB nazwie kanału — mocny minus (-15 pkt).
+# Dopasowanie substring, case-insensitive.
 PRODUCTION_PATTERNS = [
-    "studios", "pictures", "dc comics", "marvel studios",
-    "netflix", "disney+", "hbo max", "amazon prime",
-    "paramount pictures", "universal pictures",
+    "studios", "pictures", "movies", "official", "dc comics", "marvel",
+    "netflix", "disney", "hbo", "amazon prime", "paramount", "universal pictures",
     "20th century", "warner bros", "sony pictures", "lionsgate",
+    "simpsons", "family guy", "south park",
 ]
 
 # Sygnały reuploadu w opisie — lekki minus (-5 pkt).
@@ -118,15 +126,15 @@ def _normalize(text):
 
 
 def is_hard_reject(title, description, channel_name=""):
-    """Zwraca True jeśli TYTUŁ zawiera wzorzec twardego odrzutu.
+    """Zwraca True jeśli tytuł lub opis zawiera wzorzec twardego odrzutu.
 
-    Celowo sprawdzamy tylko tytuł — opisy są zaszumione i powodują
-    fałszywe trafienia (np. słowo "trailer" w opisie reakcji).
+    Używane przed scoringiem — gdy True, short jest pomijany (chyba że kanał
+    jest oznaczony is_commentary=True, co sprawdzane jest w wywołującym kodzie).
     """
-    title_norm = _normalize(title)
+    text = _normalize(title + " " + (description or ""))
     for lang_patterns in HARD_REJECT_PATTERNS.values():
         for pat in lang_patterns:
-            if _normalize(pat) in title_norm:
+            if _normalize(pat) in text:
                 return True
     return False
 
