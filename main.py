@@ -689,6 +689,9 @@ def _rate_with_gemini(candidates):
         }
         try:
             res = requests.post(url, json=payload, timeout=90).json()
+            if "candidates" not in res:
+                print(f"⚠️ Gemini brak 'candidates': {json.dumps(res)[:300]}")
+                continue
             text = res["candidates"][0]["content"]["parts"][0]["text"].strip()
             if text.startswith("```"):
                 text = text.split("\n", 1)[1]
