@@ -21,6 +21,7 @@
       <a href="/hity" data-cat="hity">⚡ Hity</a>
       <a href="/trendy" data-cat="trendy">🌍 Trendy</a>
       <a href="/commentary" data-cat="commentary">🎙️ Commentary</a>
+      <a href="/ai" data-cat="ai">🤖 AI</a>
       <a href="/fun" data-cat="fun">Zagranica 2</a>
       <a href="/zwierzeta" data-cat="zwierzeta">Zwierzęta</a>
       <a href="/nauka" data-cat="nauka">Nauka</a>
@@ -142,6 +143,32 @@
     </div>
   </div>
 
+  <!-- WIDOK AI -->
+  <div id="view-ai" style="display:none">
+    <div class="controls">
+      <div class="group">
+        <label for="ai-sort">Sortuj:</label>
+        <select id="ai-sort">
+          <option value="ai_confidence">Pewność AI</option>
+          <option value="vph">VPH (wzrost/h)</option>
+          <option value="views">Wyświetlenia</option>
+          <option value="published">Najnowsze</option>
+        </select>
+      </div>
+      <div class="group">
+        <label for="ai-lang">Język:</label>
+        <select id="ai-lang">
+          <option value="">Wszystkie</option>
+        </select>
+      </div>
+      <div class="c-hint" id="ai-hint"></div>
+      <span class="count" id="ai-count"></span>
+    </div>
+    <div id="ai-videos">
+      <div class="state"><div class="spinner"></div>Oceniam shorty przez Gemini…</div>
+    </div>
+  </div>
+
   <!-- PANEL ZARZĄDZANIA -->
   <div id="view-manage" style="display:none">
     <div class="manage-wrap">
@@ -178,7 +205,7 @@
 
   <script>
     const path = window.location.pathname;
-    const valid = ["viral","hity","trendy","commentary","nauka","zwierzeta","fun","k1","k2","k3","k4","k5","k6","manage"];
+    const valid = ["viral","hity","trendy","commentary","ai","nauka","zwierzeta","fun","k1","k2","k3","k4","k5","k6","manage"];
     let category = "main";
     valid.forEach(c => { if (path === "/" + c) category = c; });
 
@@ -326,6 +353,110 @@
       sortSel.addEventListener('change', renderCommentary);
       langSel.addEventListener('change', renderCommentary);
       catSel.addEventListener('change', renderCommentary);
+    }
+
+    // ---------- TRYB: AI ----------
+    else if (category === "ai") {
+      document.getElementById('view-feed').style.display = 'none';
+      document.getElementById('view-ai').style.display = 'block';
+
+      const sortSel = document.getElementById('ai-sort');
+      const langSel = document.getElementById('ai-lang');
+      const hint = document.getElementById('ai-hint');
+      let allAI = [];
+
+      function aiCardHTML(v) {
+        const conf = v.ai_confidence != null ? v.ai_confidence : '?';
+        const confColor = conf >= 90 ? '#22c55e' : conf >= 70 ? '#f59e0b' : '#94a3b8';
+        const confBadge = `<span class="badge-score" style="background:${confColor}">🤖 ${conf}%</span>`;
+        const reasonEl = v.ai_reason
+          ? `<div class="card-ai-reason" title="${v.ai_reason.replace(/"/g,'&quot;')}">💬 ${v.ai_reason.slice(0,100).replace(/</g,'&lt;')}${v.ai_reason.length>100?'…':''}</div>`
+          : '';
+        const langBadge = v.lang && v.lang !== '?' ? `<span class="badge-lang">${v.lang_flag||''} ${v.lang}</span>` : '';
+        const viral = (Number(v.views)||0) >= 100000;
+        const date = v.published ? new Date(v.published).toLocaleDateString('pl-PL') : '';
+        const vphStr = v.vph != null ? `<span title="wyświetlenia/h">⚡ <b>${fmt(v.vph)}/h</b></span>` : '';
+        return `
+          <a class="title-link" href="${v.url}" target="_blank" rel="noopener">
+            <div class="thumb-wrap">
+              <img src="${v.thumbnail}" alt="" loading="lazy" />
+              ${viral ? '<span class="badge-viral">VIRAL</span>' : ''}
+              ${confBadge}
+              <span class="badge-dur">${v.duration || ''}</span>
+            </div>
+          </a>
+          <div class="body">
+            <a class="title-link" href="${v.url}" target="_blank" rel="noopener"><h3>${v.title}</h3></a>
+            <div class="channel">${v.channel || 'Nieznany kanał'} ${langBadge}</div>
+            ${reasonEl}
+            <div class="stats">
+              <span>👁️ <b>${fmt(v.views)}</b></span>
+              <span>👍 <b>${fmt(v.likes)}</b></span>
+              ${vphStr}
+              ${date ? `<span class="date">🗓️ ${date}</span>` : ''}
+            </div>
+          </div>`;
+      }
+
+      function renderAI() {
+        const sortBy = sortSel.value;
+        const langFilter = langSel.value;
+        let list = langFilter ? allAI.filter(v => v.lang === langFilter) : allAI.slice();
+        list.sort((a, b) => {
+          if (sortBy === 'published') return new Date(b.published) - new Date(a.published);
+          if (sortBy === 'ai_confidence') return (b.ai_confidence||0) - (a.ai_confidence||0);
+          if (sortBy === 'vph') return (b.vph||0) - (a.vph||0);
+          return (Number(b[sortBy])||0) - (Number(a[sortBy])||0);
+        });
+        const container = document.getElementById('ai-videos');
+        document.getElementById('ai-count').textContent =
+          list.length + (list.length === 1 ? ' short' : ' shortów');
+        if (!list.length) {
+          container.innerHTML = '<div class="state">😔 Brak wyników.</div>';
+          hint.innerHTML = allAI.length === 0
+            ? 'Brak wyników — sprawdź czy GEMINI_API_KEY jest ustawiony.'
+            : 'Brak wyników dla tego filtra.';
+          return;
+        }
+        hint.textContent = '';
+        container.innerHTML = '';
+        list.forEach((v, i) => {
+          const div = document.createElement('div');
+          div.className = 'video';
+          div.style.animationDelay = Math.min(i*30, 400) + 'ms';
+          div.innerHTML = aiCardHTML(v);
+          container.appendChild(div);
+        });
+      }
+
+      fetch('/api/ai')
+        .then(r => r.json())
+        .then(data => {
+          allAI = data.videos || [];
+          const q = document.getElementById('quota');
+          if (data.quota_used !== undefined) {
+            const geminiInfo = data.gemini_new != null
+              ? ` • Gemini: ${data.gemini_new} nowych, ${data.gemini_cached} z cache`
+              : '';
+            q.innerHTML = `Quota: ${data.quota_used}${geminiInfo}` +
+              (data.cached ? ' <span class="cached">• z cache</span>' : '');
+            q.style.display = 'block';
+          }
+          const langs = [...new Set(allAI.map(v => v.lang).filter(l => l && l !== '?'))].sort();
+          langs.forEach(l => {
+            const opt = document.createElement('option');
+            opt.value = l;
+            opt.textContent = (allAI.find(v => v.lang === l)?.lang_flag || '') + ' ' + l.toUpperCase();
+            langSel.appendChild(opt);
+          });
+          renderAI();
+        })
+        .catch(() => {
+          document.getElementById('ai-videos').innerHTML = '<div class="state">❌ Błąd ładowania AI.</div>';
+        });
+
+      sortSel.addEventListener('change', renderAI);
+      langSel.addEventListener('change', renderAI);
     }
 
     // ---------- TRYB: HITY ----------

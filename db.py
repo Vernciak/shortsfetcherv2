@@ -32,6 +32,49 @@ def init_db():
             ALTER TABLE channels
             ADD COLUMN IF NOT EXISTS is_commentary BOOLEAN DEFAULT false;
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS ai_ratings (
+                video_id      TEXT PRIMARY KEY,
+                is_commentary BOOLEAN NOT NULL,
+                confidence    INT NOT NULL,
+                reason        TEXT,
+                rated_at      TIMESTAMPTZ DEFAULT now()
+            );
+        """)
+        conn.commit()
+
+
+def get_ai_ratings(video_ids):
+    """Zwraca dict video_id -> {is_commentary, confidence, reason} dla już ocenionych."""
+    if not video_ids:
+        return {}
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT video_id, is_commentary, confidence, reason "
+            "FROM ai_ratings WHERE video_id = ANY(%s)",
+            (list(video_ids),)
+        )
+        return {row[0]: {"is_commentary": bool(row[1]), "confidence": row[2], "reason": row[3]}
+                for row in cur.fetchall()}
+
+
+def save_ai_ratings(ratings):
+    """Upsertuje listę {video_id, is_commentary, confidence, reason}."""
+    if not ratings:
+        return
+    with get_conn() as conn, conn.cursor() as cur:
+        psycopg2.extras.execute_values(
+            cur,
+            """INSERT INTO ai_ratings (video_id, is_commentary, confidence, reason)
+               VALUES %s
+               ON CONFLICT (video_id) DO UPDATE SET
+                 is_commentary = EXCLUDED.is_commentary,
+                 confidence    = EXCLUDED.confidence,
+                 reason        = EXCLUDED.reason,
+                 rated_at      = now()""",
+            [(r["video_id"], r["is_commentary"], r["confidence"], r.get("reason", ""))
+             for r in ratings]
+        )
         conn.commit()
 
 
