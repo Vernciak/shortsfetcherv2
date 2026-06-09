@@ -667,6 +667,24 @@ def _ai_hard_reject(title):
     return any(p in t for p in _AI_HARD_REJECT)
 
 
+@app.route('/api/ai/models')
+def list_gemini_models():
+    """Diagnostyka — zwraca modele dostępne dla klucza, które wspierają generateContent."""
+    if not GEMINI_API_KEY:
+        return jsonify({"error": "Brak GEMINI_API_KEY"})
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
+        res = requests.get(url, timeout=15).json()
+        models = [
+            {"name": m.get("name"), "displayName": m.get("displayName")}
+            for m in res.get("models", [])
+            if "generateContent" in m.get("supportedGenerationMethods", [])
+        ]
+        return jsonify({"current_model": GEMINI_MODEL, "available": models})
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+
 def _rate_with_gemini(candidates):
     """Wysyła kandydatów do Gemini w paczkach po 50. Zwraca dict video_id -> rating.
 
