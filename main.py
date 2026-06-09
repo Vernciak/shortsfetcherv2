@@ -184,6 +184,7 @@ def _parse_video_details(items):
             "tags": snip.get("tags", []),
             "description": snip.get("description", "")[:500],
             "audio_lang": snip.get("defaultAudioLanguage") or snip.get("defaultLanguage") or "",
+            "category_id": snip.get("categoryId", ""),
         })
     return videos
 
