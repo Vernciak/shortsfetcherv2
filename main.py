@@ -48,8 +48,8 @@ COMMENTARY_CACHE_TTL = 7200
 
 # Parametry endpointu AI (Gemini)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-# Model — alias zawsze wskazujący aktualny Flash (stabilniejszy niż konkretna wersja)
-GEMINI_MODEL = "gemini-flash-latest"
+# gemini-1.5-flash-8b: mały, szybki, GA, znacznie rzadziej przeciążony niż 2.x
+GEMINI_MODEL = "gemini-1.5-flash-8b"
 # Minimalny confidence Gemini żeby short trafił do wyników (0-100)
 AI_MIN_CONFIDENCE = 60
 # TTL cache wyników AI (2h)
@@ -679,7 +679,9 @@ def _rate_with_gemini(candidates):
     url = ("https://generativelanguage.googleapis.com/v1beta/models/"
            f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}")
 
-    for batch in _chunk(candidates, 50):
+    for batch_idx, batch in enumerate(_chunk(candidates, 25)):
+        if batch_idx > 0:
+            time.sleep(1)
         items = [
             {
                 "video_id": v["id"],
