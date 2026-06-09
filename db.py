@@ -41,6 +41,23 @@ def init_db():
                 rated_at      TIMESTAMPTZ DEFAULT now()
             );
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS saved_shorts (
+                id          SERIAL PRIMARY KEY,
+                video_id    TEXT UNIQUE NOT NULL,
+                title       TEXT,
+                channel     TEXT,
+                thumbnail   TEXT,
+                url         TEXT,
+                views       BIGINT DEFAULT 0,
+                likes       BIGINT DEFAULT 0,
+                duration    TEXT,
+                published   TEXT,
+                status      TEXT DEFAULT 'todo',
+                note        TEXT,
+                saved_at    TIMESTAMPTZ DEFAULT now()
+            );
+        """)
         conn.commit()
 
 
@@ -218,3 +235,78 @@ def resolve_channel_id(link, api_key):
             return None, f"Błąd API: {e}"
 
     return None, "Nie rozpoznano linku (wklej link do kanału lub filmu)"
+
+
+# ---------- Zapisane shorty ----------
+
+def save_short(data):
+    """Zapisuje short. Zwraca (added: bool, id: int)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO saved_shorts
+               (video_id, title, channel, thumbnail, url, views, likes, duration, published)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               ON CONFLICT (video_id) DO NOTHING
+               RETURNING id""",
+            (data["video_id"], data.get("title"), data.get("channel"),
+             data.get("thumbnail"), data.get("url"),
+             int(data.get("views") or 0), int(data.get("likes") or 0),
+             data.get("duration"), data.get("published"))
+        )
+        row = cur.fetchone()
+        conn.commit()
+        return (True, row[0]) if row else (False, None)
+
+
+def delete_short(video_id):
+    """Usuwa z zapisanych. Zwraca True jeśli usunięto."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM saved_shorts WHERE video_id = %s", (video_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def get_saved_shorts(status=None):
+    """Zwraca listę zapisanych shortów, opcjonalnie filtrując po statusie."""
+    with get_conn() as conn, conn.cursor(
+        cursor_factory=psycopg2.extras.RealDictCursor
+    ) as cur:
+        if status:
+            cur.execute(
+                "SELECT * FROM saved_shorts WHERE status = %s ORDER BY saved_at DESC",
+                (status,)
+            )
+        else:
+            cur.execute("SELECT * FROM saved_shorts ORDER BY saved_at DESC")
+        return [dict(r) for r in cur.fetchall()]
+
+
+def get_saved_ids():
+    """Zwraca zbiór video_id wszystkich zapisanych shortów."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT video_id FROM saved_shorts")
+        return [row[0] for row in cur.fetchall()]
+
+
+def patch_short(video_id, status=None, note=None):
+    """Zmienia status i/lub notatkę. Zwraca True jeśli rekord istnieje."""
+    if status is None and note is None:
+        return False
+    with get_conn() as conn, conn.cursor() as cur:
+        if status is not None and note is not None:
+            cur.execute(
+                "UPDATE saved_shorts SET status=%s, note=%s WHERE video_id=%s",
+                (status, note, video_id)
+            )
+        elif status is not None:
+            cur.execute(
+                "UPDATE saved_shorts SET status=%s WHERE video_id=%s",
+                (status, video_id)
+            )
+        else:
+            cur.execute(
+                "UPDATE saved_shorts SET note=%s WHERE video_id=%s",
+                (note, video_id)
+            )
+        conn.commit()
+        return cur.rowcount > 0

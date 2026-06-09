@@ -22,6 +22,7 @@
       <a href="/trendy" data-cat="trendy">🌍 Trendy</a>
       <a href="/commentary" data-cat="commentary">🎙️ Commentary</a>
       <a href="/ai" data-cat="ai">🤖 AI</a>
+      <a href="/saved" data-cat="saved">🔖 Zapisane</a>
       <a href="/fun" data-cat="fun">Zagranica 2</a>
       <a href="/zwierzeta" data-cat="zwierzeta">Zwierzęta</a>
       <a href="/nauka" data-cat="nauka">Nauka</a>
@@ -188,6 +189,23 @@
     </div>
   </div>
 
+  <!-- WIDOK ZAPISANE -->
+  <div id="view-saved" style="display:none">
+    <div class="controls">
+      <div class="group">
+        <label>Status:</label>
+        <div class="seg" id="saved-filter">
+          <button data-s="" class="active">Wszystkie</button>
+          <button data-s="todo">📋 Do zrobienia</button>
+          <button data-s="doing">🔨 W trakcie</button>
+          <button data-s="done">✅ Zrobione</button>
+        </div>
+      </div>
+      <span class="count" id="saved-count"></span>
+    </div>
+    <div id="saved-videos"></div>
+  </div>
+
   <!-- PANEL ZARZĄDZANIA -->
   <div id="view-manage" style="display:none">
     <div class="manage-wrap">
@@ -224,7 +242,7 @@
 
   <script>
     const path = window.location.pathname;
-    const valid = ["viral","hity","trendy","commentary","ai","nauka","zwierzeta","fun","k1","k2","k3","k4","k5","k6","manage"];
+    const valid = ["viral","hity","trendy","commentary","ai","saved","nauka","zwierzeta","fun","k1","k2","k3","k4","k5","k6","manage"];
     let category = "main";
     valid.forEach(c => { if (path === "/" + c) category = c; });
 
@@ -242,6 +260,44 @@
     const CAT_LABELS = {main:"Główna",fun:"Zagranica 2",zwierzeta:"Zwierzęta",nauka:"Nauka",
       k1:"K1",k2:"K2",k3:"K3",k4:"K4",k5:"K5",k6:"K6"};
 
+    // Globalny zbiór zapisanych video_id — ładowany raz przy starcie widoku
+    let savedIds = new Set();
+
+    async function loadSavedIds() {
+      try {
+        const r = await fetch('/api/saved/ids');
+        const d = await r.json();
+        savedIds = new Set(d.ids || []);
+      } catch(e) {}
+    }
+
+    async function toggleSave(v, btn) {
+      const isSaved = savedIds.has(v.id);
+      if (isSaved) {
+        try {
+          await fetch(`/api/saved/${encodeURIComponent(v.id)}`, {method: 'DELETE'});
+          savedIds.delete(v.id);
+          btn.classList.remove('save-active');
+          btn.title = 'Zapisz';
+        } catch(e) {}
+      } else {
+        try {
+          await fetch('/api/saved', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({
+              video_id: v.id, title: v.title, channel: v.channel,
+              thumbnail: v.thumbnail, url: v.url, views: v.views,
+              likes: v.likes, duration: v.duration, published: v.published
+            })
+          });
+          savedIds.add(v.id);
+          btn.classList.add('save-active');
+          btn.title = 'Usuń z zapisanych';
+        } catch(e) {}
+      }
+    }
+
     function cardHTML(v, badge) {
       const viral = (Number(v.views)||0) >= 100000;
       const date = v.published ? new Date(v.published).toLocaleDateString('pl-PL') : '';
@@ -251,6 +307,8 @@
       const vphStr = v.vph != null ? `<span title="wyświetlenia/h">⚡ <b>${fmt(v.vph)}/h</b></span>` : '';
       const engStr = v.engagement_rate != null ? `<span title="engagement">💬 <b>${v.engagement_rate}%</b></span>` : '';
       const descSnippet = v.description ? `<div class="card-desc">${v.description.slice(0,120).replace(/</g,'&lt;')}</div>` : '';
+      const isSaved = savedIds.has(v.id);
+      const saveBtn = `<button class="btn-save${isSaved?' save-active':''}" data-vid="${v.id}" title="${isSaved?'Usuń z zapisanych':'Zapisz'}">🔖</button>`;
       return `
         <a class="title-link" href="${v.url}" target="_blank" rel="noopener">
           <div class="thumb-wrap">
@@ -262,7 +320,10 @@
           </div>
         </a>
         <div class="body">
-          <a class="title-link" href="${v.url}" target="_blank" rel="noopener"><h3>${v.title}</h3></a>
+          <div class="card-title-row">
+            <a class="title-link" href="${v.url}" target="_blank" rel="noopener"><h3>${v.title}</h3></a>
+            ${saveBtn}
+          </div>
           <div class="channel">${v.channel || 'Nieznany kanał'} ${langBadge}</div>
           <div class="stats">
             <span>👁️ <b>${fmt(v.views)}</b></span>
@@ -287,12 +348,160 @@
         div.style.animationDelay = Math.min(i*30, 400) + 'ms';
         const badge = v.multiplier ? `×${v.multiplier}` : '';
         div.innerHTML = cardHTML(v, badge);
+        // Obsługa przycisku zapisu
+        div.querySelector('.btn-save')?.addEventListener('click', e => {
+          e.preventDefault();
+          toggleSave(v, e.currentTarget);
+        });
         container.appendChild(div);
       });
     }
 
+    // Pobierz zapisane ID — asynchronicznie, aktualizuje przyciski 🔖 po załadowaniu
+    if (category !== "manage" && category !== "saved") {
+      loadSavedIds().then(() => {
+        document.querySelectorAll('.btn-save').forEach(btn => {
+          const vid = btn.dataset.vid;
+          if (vid && savedIds.has(vid)) {
+            btn.classList.add('save-active');
+            btn.title = 'Usuń z zapisanych';
+          }
+        });
+      });
+    }
+
+    // ---------- TRYB: ZAPISANE ----------
+    if (category === "saved") {
+      document.getElementById('view-feed').style.display = 'none';
+      document.getElementById('view-saved').style.display = 'block';
+
+      const STATUS_LABELS = {todo: '📋 Do zrobienia', doing: '🔨 W trakcie', done: '✅ Zrobione'};
+      const STATUS_COLORS = {todo: 'var(--accent)', doing: '#f59e0b', done: '#22c55e'};
+      let allSaved = [];
+      let savedStatusFilter = '';
+
+      function savedCardHTML(s) {
+        const date = s.saved_at ? new Date(s.saved_at).toLocaleDateString('pl-PL') : '';
+        const pubDate = s.published ? new Date(s.published).toLocaleDateString('pl-PL') : '';
+        const color = STATUS_COLORS[s.status] || 'var(--border)';
+        const noteVal = (s.note || '').replace(/"/g, '&quot;');
+        const opts = ['todo','doing','done'].map(st =>
+          `<option value="${st}"${s.status===st?' selected':''}>${STATUS_LABELS[st]}</option>`
+        ).join('');
+        return `
+          <a class="title-link" href="${s.url}" target="_blank" rel="noopener">
+            <div class="thumb-wrap" style="outline:2px solid ${color};outline-offset:-2px">
+              <img src="${s.thumbnail}" alt="" loading="lazy" />
+              <span class="badge-dur">${s.duration || ''}</span>
+            </div>
+          </a>
+          <div class="body">
+            <div class="card-title-row">
+              <a class="title-link" href="${s.url}" target="_blank" rel="noopener"><h3>${s.title||''}</h3></a>
+              <button class="btn-save save-active btn-unsave" data-vid="${s.video_id}" title="Usuń z zapisanych">🔖</button>
+            </div>
+            <div class="channel">${s.channel || ''}</div>
+            <div class="stats">
+              <span>👁️ <b>${fmt(s.views)}</b></span>
+              <span>👍 <b>${fmt(s.likes)}</b></span>
+              ${pubDate ? `<span class="date">🗓️ ${pubDate}</span>` : ''}
+              <span class="date">💾 ${date}</span>
+            </div>
+            <div class="saved-controls">
+              <select class="saved-status-sel" data-vid="${s.video_id}">${opts}</select>
+              <input class="saved-note" type="text" data-vid="${s.video_id}"
+                placeholder="Notatka…" value="${noteVal}" maxlength="300">
+            </div>
+          </div>`;
+      }
+
+      function renderSaved() {
+        const list = savedStatusFilter
+          ? allSaved.filter(s => s.status === savedStatusFilter)
+          : allSaved;
+        const container = document.getElementById('saved-videos');
+        document.getElementById('saved-count').textContent =
+          list.length + (list.length === 1 ? ' short' : ' shortów');
+        if (!list.length) {
+          container.innerHTML = allSaved.length === 0
+            ? '<div class="state">Brak zapisanych — klikaj 🔖 na shortach, żeby je tu odłożyć.</div>'
+            : '<div class="state">😔 Brak shortów z tym statusem.</div>';
+          return;
+        }
+        container.innerHTML = '';
+        list.forEach((s, i) => {
+          const div = document.createElement('div');
+          div.className = 'video';
+          div.style.animationDelay = Math.min(i*30, 400) + 'ms';
+          div.innerHTML = savedCardHTML(s);
+
+          // Usuń z zapisanych
+          div.querySelector('.btn-unsave').addEventListener('click', async e => {
+            e.preventDefault();
+            await fetch(`/api/saved/${encodeURIComponent(s.video_id)}`, {method:'DELETE'});
+            savedIds.delete(s.video_id);
+            allSaved = allSaved.filter(x => x.video_id !== s.video_id);
+            renderSaved();
+          });
+
+          // Zmiana statusu
+          div.querySelector('.saved-status-sel').addEventListener('change', async e => {
+            const newStatus = e.target.value;
+            await fetch(`/api/saved/${encodeURIComponent(s.video_id)}`, {
+              method:'PATCH', headers:{'Content-Type':'application/json'},
+              body: JSON.stringify({status: newStatus})
+            });
+            s.status = newStatus;
+            // odśwież obwódkę
+            div.querySelector('.thumb-wrap').style.outline =
+              `2px solid ${STATUS_COLORS[newStatus]}`;
+            // jeśli filtr aktywny — usuń kartę z widoku
+            if (savedStatusFilter && savedStatusFilter !== newStatus) {
+              allSaved = allSaved.filter(x => x.video_id !== s.video_id);
+              renderSaved();
+            }
+          });
+
+          // Zapis notatki (blur lub enter)
+          const noteInp = div.querySelector('.saved-note');
+          const saveNote = async () => {
+            await fetch(`/api/saved/${encodeURIComponent(s.video_id)}`, {
+              method:'PATCH', headers:{'Content-Type':'application/json'},
+              body: JSON.stringify({note: noteInp.value})
+            });
+          };
+          noteInp.addEventListener('blur', saveNote);
+          noteInp.addEventListener('keydown', e => { if (e.key === 'Enter') noteInp.blur(); });
+
+          container.appendChild(div);
+        });
+      }
+
+      // Przyciski filtrowania statusu
+      document.getElementById('saved-filter').querySelectorAll('button').forEach(b => {
+        b.addEventListener('click', () => {
+          savedStatusFilter = b.dataset.s;
+          document.querySelectorAll('#saved-filter button').forEach(x => x.classList.remove('active'));
+          b.classList.add('active');
+          renderSaved();
+        });
+      });
+
+      fetch('/api/saved')
+        .then(r => r.json())
+        .then(data => {
+          allSaved = data.shorts || [];
+          savedIds = new Set(allSaved.map(s => s.video_id));
+          renderSaved();
+        })
+        .catch(() => {
+          document.getElementById('saved-videos').innerHTML =
+            '<div class="state">❌ Błąd ładowania zapisanych.</div>';
+        });
+    }
+
     // ---------- TRYB: COMMENTARY ----------
-    if (category === "commentary") {
+    else if (category === "commentary") {
       document.getElementById('view-feed').style.display = 'none';
       document.getElementById('view-commentary').style.display = 'block';
 
@@ -734,6 +943,10 @@
           div.className = 'video';
           div.style.animationDelay = Math.min(i*30, 400) + 'ms';
           div.innerHTML = cardHTML(v, '');
+          div.querySelector('.btn-save')?.addEventListener('click', e => {
+            e.preventDefault();
+            toggleSave(v, e.currentTarget);
+          });
           container.appendChild(div);
         });
       }
