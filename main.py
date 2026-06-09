@@ -4,7 +4,7 @@ import os, json, requests, time, statistics
 from dotenv import load_dotenv
 import isodate
 import db
-from commentary_patterns import score_commentary, LANG_FLAGS
+from commentary_patterns import score_commentary, is_hard_reject, LANG_FLAGS
 
 load_dotenv()
 
@@ -35,14 +35,20 @@ HITS_CACHE_TTL = 21600
 # Cache kategorii YT (24h)
 CATEGORIES_CACHE_TTL = 86400
 
+# Etap B: gdy True, shorty bez napisów (caption="false") dostają -20 do score
+REQUIRE_CAPTIONS = True
+
 # Parametry endpointu Commentary
 # Kraje do przeszukania trendów (1 jednostka API per kraj)
 COMMENTARY_COUNTRIES = ["US", "GB", "RU", "BR", "ES", "MX", "DE", "FR", "IT", "PL"]
 # Kategorie YT z których pobieramy dodatkowe trendy (1 jednostka per kraj×kategoria)
 # 24=Entertainment, 22=People&Blogs, 28=Science&Tech, 26=Howto&Style
 COMMENTARY_EXTRA_CATEGORIES = ["24", "22", "28", "26"]
-# Minimalny wynik żeby short trafił do wyników (łatwy do podkręcenia)
-COMMENTARY_MIN_SCORE = 10
+# Minimalny wynik żeby short trafił do wyników.
+# Po dodaniu anty-wzorców i filtra napisów rekomendowane: 20
+# Rozkład punktów: max pozytywne = 30 (wzorce) + 10 (czas) + 30 (kanał) = 70
+# Kary: -15 IP/studio, -5 reupload, -20 brak napisów (gdy REQUIRE_CAPTIONS=True)
+COMMENTARY_MIN_SCORE = 20
 # TTL cache commentary — droższe przez wiele krajów, więc dłuższe (2h)
 COMMENTARY_CACHE_TTL = 7200
 
@@ -184,6 +190,7 @@ def _parse_video_details(items):
             "tags": snip.get("tags", []),
             "description": snip.get("description", "")[:500],
             "audio_lang": snip.get("defaultAudioLanguage") or snip.get("defaultLanguage") or "",
+            "caption": str(details["contentDetails"].get("caption", "false")).lower(),
         })
     return videos
 
@@ -507,11 +514,18 @@ def get_commentary():
             continue
 
         is_commentary_ch = v.get("channel_id", "") in commentary_channel_ids
+
+        # Etap A: twardy odrzut — nigdy nie trafiają do wyników (chyba że pewny kanał)
+        if not is_commentary_ch and is_hard_reject(v["title"], v.get("description", "")):
+            continue
+
         score, lang = score_commentary(
             v["title"],
             v.get("description", ""),
             v.get("duration_seconds", 0),
             is_commentary_ch,
+            caption=v.get("caption", "false"),
+            require_captions=REQUIRE_CAPTIONS,
         )
         if score < COMMENTARY_MIN_SCORE:
             continue
