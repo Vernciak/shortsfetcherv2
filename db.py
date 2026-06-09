@@ -15,7 +15,7 @@ def get_conn():
 
 
 def init_db():
-    """Tworzy tabelę kanałów jeśli nie istnieje."""
+    """Tworzy tabelę kanałów jeśli nie istnieje i dodaje brakujące kolumny."""
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("""
             CREATE TABLE IF NOT EXISTS channels (
@@ -26,6 +26,11 @@ def init_db():
                 added_at    TIMESTAMPTZ DEFAULT now(),
                 UNIQUE (category, channel_id)
             );
+        """)
+        # Idempotentna migracja — nie psuje istniejących danych
+        cur.execute("""
+            ALTER TABLE channels
+            ADD COLUMN IF NOT EXISTS is_commentary BOOLEAN DEFAULT false;
         """)
         conn.commit()
 
@@ -54,17 +59,39 @@ def get_all_channels():
         return [row[0] for row in cur.fetchall()]
 
 
+def get_all_channels_with_flags():
+    """Zwraca listę (channel_id, is_commentary) — unikalnych kanałów (dla commentary)."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT ON (channel_id) channel_id, is_commentary "
+            "FROM channels ORDER BY channel_id, is_commentary DESC"
+        )
+        return [(row[0], bool(row[1])) for row in cur.fetchall()]
+
+
 def list_channels(category):
     """Zwraca pełne rekordy (do wyświetlenia w panelu)."""
     with get_conn() as conn, conn.cursor(
         cursor_factory=psycopg2.extras.RealDictCursor
     ) as cur:
         cur.execute(
-            "SELECT id, channel_id, title, added_at FROM channels "
+            "SELECT id, channel_id, title, added_at, is_commentary FROM channels "
             "WHERE category = %s ORDER BY added_at DESC",
             (category,),
         )
         return [dict(r) for r in cur.fetchall()]
+
+
+def set_channel_commentary(channel_id, value):
+    """Ustawia flagę is_commentary dla wszystkich wierszy danego kanału. Zwraca liczbę zmienionych wierszy."""
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE channels SET is_commentary = %s WHERE channel_id = %s",
+            (bool(value), channel_id),
+        )
+        updated = cur.rowcount
+        conn.commit()
+        return updated
 
 
 def add_channel(category, channel_id, title=None):
