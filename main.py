@@ -48,10 +48,14 @@ COMMENTARY_CACHE_TTL = 7200
 
 # Parametry endpointu AI (Gemini)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Model — 2.0-flash-lite jest GA i stabilniejszy niż 2.5-flash-lite (preview)
+GEMINI_MODEL = "gemini-2.0-flash-lite"
 # Minimalny confidence Gemini żeby short trafił do wyników (0-100)
 AI_MIN_CONFIDENCE = 60
 # TTL cache wyników AI (2h)
 AI_CACHE_TTL = 7200
+# Max kandydatów do oceny per request — reszta zostanie w DB cache przy kolejnym odświeżeniu
+AI_MAX_NEW_PER_REQUEST = 150
 
 # Lekkie anty-wzorce dla preselekcji przed Gemini (tylko oczywiste przypadki)
 _AI_HARD_REJECT = [
@@ -664,13 +668,16 @@ def _ai_hard_reject(title):
 
 
 def _rate_with_gemini(candidates):
-    """Wysyła kandydatów do Gemini w paczkach po 50. Zwraca dict video_id -> rating."""
+    """Wysyła kandydatów do Gemini w paczkach po 50. Zwraca dict video_id -> rating.
+
+    Retry do 3 razy per paczka przy 503 (model przeciążony), z rosnącym opóźnieniem.
+    """
     if not GEMINI_API_KEY or not candidates:
         return {}
 
     results = {}
     url = ("https://generativelanguage.googleapis.com/v1beta/models/"
-           f"gemini-2.5-flash-lite:generateContent?key={GEMINI_API_KEY}")
+           f"{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}")
 
     for batch in _chunk(candidates, 50):
         items = [
@@ -687,25 +694,33 @@ def _rate_with_gemini(candidates):
             "contents": [{"parts": [{"text": json.dumps(items, ensure_ascii=False)}]}],
             "generationConfig": {"temperature": 0.1},
         }
-        try:
-            res = requests.post(url, json=payload, timeout=90).json()
-            if "candidates" not in res:
-                print(f"⚠️ Gemini brak 'candidates': {json.dumps(res)[:300]}")
-                continue
-            text = res["candidates"][0]["content"]["parts"][0]["text"].strip()
-            if text.startswith("```"):
-                text = text.split("\n", 1)[1]
-                text = text.rsplit("```", 1)[0].strip()
-            for r in json.loads(text):
-                vid = r.get("video_id")
-                if vid:
-                    results[vid] = {
-                        "is_commentary": bool(r.get("is_commentary", False)),
-                        "confidence": int(r.get("confidence", 0)),
-                        "reason": r.get("reason", ""),
-                    }
-        except Exception as e:
-            print(f"⚠️ Gemini batch error ({len(batch)} filmów): {e}")
+        for attempt in range(3):
+            try:
+                res = requests.post(url, json=payload, timeout=25).json()
+                if "candidates" not in res:
+                    code = res.get("error", {}).get("code", 0)
+                    print(f"⚠️ Gemini brak 'candidates' (próba {attempt+1}): {json.dumps(res)[:200]}")
+                    if code in (503, 429) and attempt < 2:
+                        time.sleep(3 * (attempt + 1))
+                        continue
+                    break
+                text = res["candidates"][0]["content"]["parts"][0]["text"].strip()
+                if text.startswith("```"):
+                    text = text.split("\n", 1)[1]
+                    text = text.rsplit("```", 1)[0].strip()
+                for r in json.loads(text):
+                    vid = r.get("video_id")
+                    if vid:
+                        results[vid] = {
+                            "is_commentary": bool(r.get("is_commentary", False)),
+                            "confidence": int(r.get("confidence", 0)),
+                            "reason": r.get("reason", ""),
+                        }
+                break
+            except Exception as e:
+                print(f"⚠️ Gemini batch error ({len(batch)} filmów, próba {attempt+1}): {e}")
+                if attempt < 2:
+                    time.sleep(3 * (attempt + 1))
 
     return results
 
@@ -839,15 +854,18 @@ def get_ai():
 
     uncached = [v for v in to_rate if v["id"] not in cached_ratings]
 
-    # Oceń nowe przez Gemini
+    # Oceń nowe przez Gemini — max AI_MAX_NEW_PER_REQUEST na raz (reszta trafi przy kolejnym odświeżeniu)
     new_ratings = {}
-    if uncached and GEMINI_API_KEY:
-        new_ratings = _rate_with_gemini(uncached)
+    to_gemini = uncached[:AI_MAX_NEW_PER_REQUEST]
+    if len(uncached) > AI_MAX_NEW_PER_REQUEST:
+        print(f"ℹ️ AI: {len(uncached)} nowych kandydatów, oceniam pierwsze {AI_MAX_NEW_PER_REQUEST}")
+    if to_gemini and GEMINI_API_KEY:
+        new_ratings = _rate_with_gemini(to_gemini)
         try:
             db.save_ai_ratings([{"video_id": vid, **r} for vid, r in new_ratings.items()])
         except Exception as e:
             print(f"⚠️ DB ai_ratings write: {e}")
-    elif uncached:
+    elif to_gemini:
         print("⚠️ Brak GEMINI_API_KEY — ocena AI pominięta")
 
     all_ratings = {**cached_ratings, **new_ratings}
