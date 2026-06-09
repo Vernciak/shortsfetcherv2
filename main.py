@@ -46,6 +46,31 @@ COMMENTARY_MIN_SCORE = 10
 # TTL cache commentary — droższe przez wiele krajów, więc dłuższe (2h)
 COMMENTARY_CACHE_TTL = 7200
 
+# Parametry endpointu AI (Gemini)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Minimalny confidence Gemini żeby short trafił do wyników (0-100)
+AI_MIN_CONFIDENCE = 60
+# TTL cache wyników AI (2h)
+AI_CACHE_TTL = 7200
+
+# Lekkie anty-wzorce dla preselekcji przed Gemini (tylko oczywiste przypadki)
+_AI_HARD_REJECT = [
+    "official trailer", "official clip", "clip from", "official video",
+    "trailer oficial", "clipe oficial", "trailer dublado", "dublado", "legendado",
+    "oficjalny zwiastun", "oficjalny trailer",
+    "официальный трейлер", "официальный клип",
+    "subtitulado", "doblado", "dubbed", "subbed",
+]
+
+_GEMINI_SYSTEM_PROMPT = (
+    "Oceniasz YouTube Shorts pod kątem czy to COMMENTARY / reakcja / ciekawostka / "
+    "edutainment z narracją lektora (NIE czysty klip z filmu/serialu, trailer, teledysk, "
+    "surowy materiał bez komentarza). Rozumiesz wszystkie języki. "
+    "Zwróć czysty JSON (bez markdown), tablicę obiektów: "
+    "{video_id, is_commentary (bool), confidence (0-100), reason (krótko po polsku)}. "
+    "Nic poza JSON."
+)
+
 _cache = {}
 
 # Prawidłowe kategorie (zamiast plików JSON)
@@ -87,6 +112,7 @@ except Exception as e:
 @app.route('/hity')
 @app.route('/trendy')
 @app.route('/commentary')
+@app.route('/ai')
 @app.route('/manage')
 def index():
     return send_from_directory('frontend', 'index.html')
@@ -630,6 +656,241 @@ def api_delete_channel(row_id):
         return jsonify({"ok": False, "error": str(e)}), 500
     _cache.clear()
     return jsonify({"ok": ok})
+
+
+def _ai_hard_reject(title):
+    t = title.lower()
+    return any(p in t for p in _AI_HARD_REJECT)
+
+
+def _rate_with_gemini(candidates):
+    """Wysyła kandydatów do Gemini w paczkach po 50. Zwraca dict video_id -> rating."""
+    if not GEMINI_API_KEY or not candidates:
+        return {}
+
+    results = {}
+    url = ("https://generativelanguage.googleapis.com/v1beta/models/"
+           f"gemini-2.5-flash-lite:generateContent?key={GEMINI_API_KEY}")
+
+    for batch in _chunk(candidates, 50):
+        items = [
+            {
+                "video_id": v["id"],
+                "title": v["title"],
+                "channel": v["channel"],
+                "description": (v.get("description") or "")[:300],
+            }
+            for v in batch
+        ]
+        payload = {
+            "system_instruction": {"parts": [{"text": _GEMINI_SYSTEM_PROMPT}]},
+            "contents": [{"parts": [{"text": json.dumps(items, ensure_ascii=False)}]}],
+            "generationConfig": {"temperature": 0.1},
+        }
+        try:
+            res = requests.post(url, json=payload, timeout=90).json()
+            text = res["candidates"][0]["content"]["parts"][0]["text"].strip()
+            if text.startswith("```"):
+                text = text.split("\n", 1)[1]
+                text = text.rsplit("```", 1)[0].strip()
+            for r in json.loads(text):
+                vid = r.get("video_id")
+                if vid:
+                    results[vid] = {
+                        "is_commentary": bool(r.get("is_commentary", False)),
+                        "confidence": int(r.get("confidence", 0)),
+                        "reason": r.get("reason", ""),
+                    }
+        except Exception as e:
+            print(f"⚠️ Gemini batch error ({len(batch)} filmów): {e}")
+
+    return results
+
+
+@app.route('/api/ai')
+def get_ai():
+    now = time.time()
+    cached = _cache.get("ai")
+    if cached and now - cached[0] < AI_CACHE_TTL:
+        payload = dict(cached[1])
+        payload["cached"] = True
+        return jsonify(payload)
+
+    if not API_KEYS:
+        return jsonify({"videos": [], "quota_used": 0, "cached": False})
+
+    try:
+        channels_with_flags = db.get_all_channels_with_flags()
+    except Exception as e:
+        return jsonify({"videos": [], "quota_used": 0, "cached": False, "error": str(e)})
+
+    key_idx = [0]
+    quota_used = 0
+    seen_ids = set()
+    pool = []
+    commentary_channel_ids = {ch for ch, flag in channels_with_flags if flag}
+
+    def add_to_pool(videos_list):
+        for v in videos_list:
+            vid = v.get("id", "")
+            if vid and vid not in seen_ids:
+                seen_ids.add(vid)
+                pool.append(v)
+
+    # Źródło 1: kanały (te same co commentary)
+    all_channel_ids = [ch for ch, _ in channels_with_flags]
+    channel_video_ids = {}
+    for channel_id in all_channel_ids:
+        uploads_playlist_id = "UU" + channel_id[2:]
+        attempts = 0
+        while attempts < len(API_KEYS):
+            try:
+                url = ("https://www.googleapis.com/youtube/v3/playlistItems"
+                       f"?part=contentDetails&playlistId={uploads_playlist_id}"
+                       f"&maxResults=20"
+                       f"&key={API_KEYS[key_idx[0] % len(API_KEYS)]}")
+                res = requests.get(url, timeout=10).json()
+                quota_used += 1
+                if 'error' in res:
+                    key_idx[0] += 1
+                    attempts += 1
+                    continue
+                ids = [i["contentDetails"]["videoId"]
+                       for i in res.get("items", [])
+                       if i["contentDetails"].get("videoId")]
+                channel_video_ids[channel_id] = ids
+                break
+            except Exception as e:
+                print(f"Błąd playlistItems ai {channel_id}: {e}")
+                key_idx[0] += 1
+                attempts += 1
+                time.sleep(0.3)
+
+    all_ids = [vid for ids in channel_video_ids.values() for vid in ids]
+    channel_videos, q = _fetch_video_details_batch(all_ids, key_idx)
+    quota_used += q
+    add_to_pool(channel_videos)
+
+    # Źródła 2+3: trendy per kraj + kategoria (identycznie jak commentary)
+    def fetch_trending_ai(region, category_id=""):
+        nonlocal quota_used
+        attempts = 0
+        while attempts < len(API_KEYS):
+            try:
+                url = ("https://www.googleapis.com/youtube/v3/videos"
+                       f"?part=statistics,snippet,contentDetails"
+                       f"&chart=mostPopular&regionCode={region}&maxResults=50"
+                       + (f"&videoCategoryId={category_id}" if category_id else "")
+                       + f"&key={API_KEYS[key_idx[0] % len(API_KEYS)]}")
+                res = requests.get(url, timeout=10).json()
+                quota_used += 1
+                if 'error' in res:
+                    key_idx[0] += 1
+                    attempts += 1
+                    continue
+                return _parse_video_details(res.get("items", []))
+            except Exception as e:
+                print(f"Błąd trending ai {region}/{category_id}: {e}")
+                key_idx[0] += 1
+                attempts += 1
+                time.sleep(0.3)
+        return []
+
+    for country in COMMENTARY_COUNTRIES:
+        add_to_pool(fetch_trending_ai(country))
+        for cat_id in COMMENTARY_EXTRA_CATEGORIES:
+            add_to_pool(fetch_trending_ai(country, cat_id))
+
+    # Preselekcja: tylko wiek i twardy odrzut tytułu
+    from datetime import datetime, timezone
+    cutoff_ts = now - 86400 * 90
+
+    auto_pass = []
+    to_rate = []
+
+    for v in pool:
+        pub_ts = 0
+        try:
+            pub_ts = datetime.fromisoformat(v["published"].replace("Z", "+00:00")).timestamp()
+        except Exception:
+            pass
+        if pub_ts and pub_ts < cutoff_ts:
+            continue
+        if _ai_hard_reject(v["title"]):
+            continue
+
+        if v.get("channel_id", "") in commentary_channel_ids:
+            v["ai_confidence"] = 100
+            v["ai_reason"] = "Ręcznie oznaczony kanał commentary"
+            auto_pass.append(v)
+        else:
+            to_rate.append(v)
+
+    # Sprawdź cache ocen w DB
+    candidate_ids = [v["id"] for v in to_rate]
+    try:
+        cached_ratings = db.get_ai_ratings(candidate_ids)
+    except Exception as e:
+        print(f"⚠️ DB ai_ratings read: {e}")
+        cached_ratings = {}
+
+    uncached = [v for v in to_rate if v["id"] not in cached_ratings]
+
+    # Oceń nowe przez Gemini
+    new_ratings = {}
+    if uncached and GEMINI_API_KEY:
+        new_ratings = _rate_with_gemini(uncached)
+        try:
+            db.save_ai_ratings([{"video_id": vid, **r} for vid, r in new_ratings.items()])
+        except Exception as e:
+            print(f"⚠️ DB ai_ratings write: {e}")
+    elif uncached:
+        print("⚠️ Brak GEMINI_API_KEY — ocena AI pominięta")
+
+    all_ratings = {**cached_ratings, **new_ratings}
+
+    # Złóż wyniki
+    result = list(auto_pass)
+    for v in to_rate:
+        rating = all_ratings.get(v["id"])
+        if not rating or not rating["is_commentary"] or rating["confidence"] < AI_MIN_CONFIDENCE:
+            continue
+        v["ai_confidence"] = rating["confidence"]
+        v["ai_reason"] = rating["reason"]
+        result.append(v)
+
+    # Detekcja języka i metryki
+    for v in result:
+        _, lang = score_commentary(v["title"], v.get("description", ""),
+                                   v.get("duration_seconds", 0), False)
+        v["lang"] = lang
+        v["lang_flag"] = LANG_FLAGS.get(lang, "🌐")
+        pub_ts = 0
+        try:
+            pub_ts = datetime.fromisoformat(v["published"].replace("Z", "+00:00")).timestamp()
+        except Exception:
+            pass
+        hours_since = max((now - pub_ts) / 3600, 0.5) if pub_ts else None
+        v["vph"] = round(v["views"] / hours_since, 1) if hours_since else None
+        v["engagement_rate"] = (round((v["likes"] + v["comment_count"]) / v["views"] * 100, 2)
+                                if v["views"] > 0 else 0)
+
+    result.sort(key=lambda v: v.get("ai_confidence", 0), reverse=True)
+
+    n_new = len(new_ratings)
+    n_cached = len(candidate_ids) - len(uncached)
+    print(f"🤖 AI: {len(result)} wyników (pula {len(pool)}, "
+          f"Gemini nowych: {n_new}, z cache: {n_cached}), ~{quota_used} quota")
+
+    payload = {
+        "videos": result,
+        "quota_used": quota_used,
+        "cached": False,
+        "gemini_new": n_new,
+        "gemini_cached": n_cached,
+    }
+    _cache["ai"] = (now, payload)
+    return jsonify(payload)
 
 
 if __name__ == '__main__':
