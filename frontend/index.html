@@ -161,6 +161,25 @@
           <option value="">Wszystkie</option>
         </select>
       </div>
+      <div class="group">
+        <label>Okres:</label>
+        <div class="seg" id="ai-period">
+          <button data-d="1">24h</button>
+          <button data-d="3">3 dni</button>
+          <button data-d="7" class="active">7 dni</button>
+          <button data-d="0">Wszystko</button>
+        </div>
+      </div>
+      <div class="group">
+        <label for="ai-maxpc">Max per kanał:</label>
+        <select id="ai-maxpc">
+          <option value="2">2</option>
+          <option value="3" selected>3</option>
+          <option value="5">5</option>
+          <option value="0">Bez limitu</option>
+        </select>
+      </div>
+      <button id="ai-refresh">🔄 Odśwież</button>
       <div class="c-hint" id="ai-hint"></div>
       <span class="count" id="ai-count"></span>
     </div>
@@ -362,8 +381,21 @@
 
       const sortSel = document.getElementById('ai-sort');
       const langSel = document.getElementById('ai-lang');
+      const periodBox = document.getElementById('ai-period');
+      const maxpcSel = document.getElementById('ai-maxpc');
+      const refreshBtn = document.getElementById('ai-refresh');
       const hint = document.getElementById('ai-hint');
       let allAI = [];
+      let aiPeriodDays = 7;
+
+      periodBox.querySelectorAll('button').forEach(b => {
+        b.addEventListener('click', () => {
+          aiPeriodDays = Number(b.dataset.d);
+          periodBox.querySelectorAll('button').forEach(x => x.classList.remove('active'));
+          b.classList.add('active');
+          renderAI();
+        });
+      });
 
       function aiCardHTML(v) {
         const conf = v.ai_confidence != null ? v.ai_confidence : '?';
@@ -401,13 +433,36 @@
       function renderAI() {
         const sortBy = sortSel.value;
         const langFilter = langSel.value;
-        let list = langFilter ? allAI.filter(v => v.lang === langFilter) : allAI.slice();
+        const maxpc = Number(maxpcSel.value);
+        let list = allAI.slice();
+
+        // Filtr okresu
+        if (aiPeriodDays > 0) {
+          const cutoff = Date.now() - aiPeriodDays * 86400000;
+          list = list.filter(v => v.published && new Date(v.published).getTime() >= cutoff);
+        }
+
+        // Filtr języka
+        if (langFilter) list = list.filter(v => v.lang === langFilter);
+
+        // Sortowanie przed limitem per kanał (żeby zostawić najlepsze)
         list.sort((a, b) => {
           if (sortBy === 'published') return new Date(b.published) - new Date(a.published);
           if (sortBy === 'ai_confidence') return (b.ai_confidence||0) - (a.ai_confidence||0);
           if (sortBy === 'vph') return (b.vph||0) - (a.vph||0);
           return (Number(b[sortBy])||0) - (Number(a[sortBy])||0);
         });
+
+        // Limit per kanał
+        if (maxpc > 0) {
+          const chCount = {};
+          list = list.filter(v => {
+            const ch = v.channel_id || v.channel;
+            chCount[ch] = (chCount[ch] || 0) + 1;
+            return chCount[ch] <= maxpc;
+          });
+        }
+
         const container = document.getElementById('ai-videos');
         document.getElementById('ai-count').textContent =
           list.length + (list.length === 1 ? ' short' : ' shortów');
@@ -429,34 +484,49 @@
         });
       }
 
-      fetch('/api/ai')
-        .then(r => r.json())
-        .then(data => {
-          allAI = data.videos || [];
-          const q = document.getElementById('quota');
-          if (data.quota_used !== undefined) {
-            const geminiInfo = data.gemini_new != null
-              ? ` • Gemini: ${data.gemini_new} nowych, ${data.gemini_cached} z cache`
-              : '';
-            q.innerHTML = `Quota: ${data.quota_used}${geminiInfo}` +
-              (data.cached ? ' <span class="cached">• z cache</span>' : '');
-            q.style.display = 'block';
-          }
-          const langs = [...new Set(allAI.map(v => v.lang).filter(l => l && l !== '?'))].sort();
-          langs.forEach(l => {
-            const opt = document.createElement('option');
-            opt.value = l;
-            opt.textContent = (allAI.find(v => v.lang === l)?.lang_flag || '') + ' ' + l.toUpperCase();
-            langSel.appendChild(opt);
-          });
-          renderAI();
-        })
-        .catch(() => {
-          document.getElementById('ai-videos').innerHTML = '<div class="state">❌ Błąd ładowania AI.</div>';
-        });
+      function loadAI() {
+        document.getElementById('ai-videos').innerHTML =
+          '<div class="state"><div class="spinner"></div>Oceniam shorty przez Gemini…</div>';
+        document.getElementById('ai-count').textContent = '';
+        refreshBtn.disabled = true;
+        fetch('/api/ai?bust=' + Date.now(), {cache: 'no-store'})
+          .then(r => r.json())
+          .then(data => {
+            allAI = data.videos || [];
+            const q = document.getElementById('quota');
+            if (data.quota_used !== undefined) {
+              const geminiInfo = data.gemini_new != null
+                ? ` • Gemini: ${data.gemini_new} nowych, ${data.gemini_cached} z cache`
+                : '';
+              q.innerHTML = `Quota: ${data.quota_used}${geminiInfo}` +
+                (data.cached ? ' <span class="cached">• z cache</span>' : '');
+              q.style.display = 'block';
+            }
+            const langs = [...new Set(allAI.map(v => v.lang).filter(l => l && l !== '?'))].sort();
+            langs.forEach(l => {
+              const opt = document.createElement('option');
+              opt.value = l;
+              opt.textContent = (allAI.find(v => v.lang === l)?.lang_flag || '') + ' ' + l.toUpperCase();
+              langSel.appendChild(opt);
+            });
+            renderAI();
+          })
+          .catch(() => {
+            document.getElementById('ai-videos').innerHTML = '<div class="state">❌ Błąd ładowania AI.</div>';
+          })
+          .finally(() => { refreshBtn.disabled = false; });
+      }
+
+      refreshBtn.addEventListener('click', () => {
+        // Wymuś pominięcie cache endpointu po stronie serwera
+        fetch('/api/ai/refresh', {method: 'POST'}).catch(() => {});
+        loadAI();
+      });
 
       sortSel.addEventListener('change', renderAI);
       langSel.addEventListener('change', renderAI);
+      maxpcSel.addEventListener('change', renderAI);
+      loadAI();
     }
 
     // ---------- TRYB: HITY ----------

@@ -667,6 +667,13 @@ def _ai_hard_reject(title):
     return any(p in t for p in _AI_HARD_REJECT)
 
 
+@app.route('/api/ai/refresh', methods=['POST'])
+def ai_refresh():
+    """Czyści cache endpointu AI, żeby następne GET /api/ai pobrało świeże dane."""
+    _cache.pop("ai", None)
+    return jsonify({"ok": True})
+
+
 @app.route('/api/ai/models')
 def list_gemini_models():
     """Diagnostyka — zwraca modele dostępne dla klucza, które wspierają generateContent."""
