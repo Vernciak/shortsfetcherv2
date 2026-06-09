@@ -117,6 +117,7 @@ except Exception as e:
 @app.route('/trendy')
 @app.route('/commentary')
 @app.route('/ai')
+@app.route('/saved')
 @app.route('/manage')
 def index():
     return send_from_directory('frontend', 'index.html')
@@ -939,6 +940,70 @@ def get_ai():
     }
     _cache["ai"] = (now, payload)
     return jsonify(payload)
+
+
+# ---------- Zapisane shorty ----------
+
+VALID_STATUSES = {"todo", "doing", "done"}
+
+
+@app.route('/api/saved', methods=['GET'])
+def api_saved_list():
+    status = request.args.get("status") or None
+    if status and status not in VALID_STATUSES:
+        return jsonify({"ok": False, "error": "Nieprawidłowy status"}), 400
+    try:
+        rows = db.get_saved_shorts(status)
+        for r in rows:
+            if r.get("saved_at"):
+                r["saved_at"] = r["saved_at"].isoformat()
+        return jsonify({"shorts": rows})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route('/api/saved/ids', methods=['GET'])
+def api_saved_ids():
+    try:
+        return jsonify({"ids": db.get_saved_ids()})
+    except Exception as e:
+        return jsonify({"ids": [], "error": str(e)}), 500
+
+
+@app.route('/api/saved', methods=['POST'])
+def api_save_short():
+    data = request.get_json(silent=True) or {}
+    video_id = (data.get("video_id") or "").strip()
+    if not video_id:
+        return jsonify({"ok": False, "error": "Brak video_id"}), 400
+    try:
+        added, row_id = db.save_short(data)
+        return jsonify({"ok": True, "added": added, "id": row_id})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route('/api/saved/<video_id>', methods=['DELETE'])
+def api_delete_short(video_id):
+    try:
+        ok = db.delete_short(video_id)
+        return jsonify({"ok": ok})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route('/api/saved/<video_id>', methods=['PATCH'])
+def api_patch_short(video_id):
+    data = request.get_json(silent=True) or {}
+    status = data.get("status")
+    note = data.get("note")
+    if status is not None and status not in VALID_STATUSES:
+        return jsonify({"ok": False, "error": "Nieprawidłowy status"}), 400
+    try:
+        ok = db.patch_short(video_id, status=status, note=note)
+        return jsonify({"ok": ok})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 if __name__ == '__main__':

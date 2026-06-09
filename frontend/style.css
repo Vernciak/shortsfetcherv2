@@ -556,3 +556,71 @@ select {
   font-size: 16px;
   line-height: 1;
 }
+
+/* ---------- Przycisk zapisu 🔖 ---------- */
+.card-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.card-title-row h3 { flex: 1; margin: 0; }
+
+.btn-save {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  opacity: 0.35;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: opacity .15s, transform .15s;
+}
+.btn-save:hover { opacity: 0.75; }
+.btn-save.save-active { opacity: 1; filter: sepia(0) saturate(3); }
+.btn-save.save-active:hover { transform: scale(1.15); }
+
+/* ---------- Widok Zapisane ---------- */
+#saved-videos {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 20px;
+  padding: 22px 24px 60px;
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+.saved-controls {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.saved-status-sel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.saved-note {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.saved-note:focus {
+  outline: none;
+  border-color: var(--accent);
+}
