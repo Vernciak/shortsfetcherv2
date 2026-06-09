@@ -617,6 +617,8 @@
         const viral = (Number(v.views)||0) >= 100000;
         const date = v.published ? new Date(v.published).toLocaleDateString('pl-PL') : '';
         const vphStr = v.vph != null ? `<span title="wyświetlenia/h">⚡ <b>${fmt(v.vph)}/h</b></span>` : '';
+        const isSaved = savedIds.has(v.id);
+        const saveBtn = `<button class="btn-save${isSaved?' save-active':''}" data-vid="${v.id}" title="${isSaved?'Usuń z zapisanych':'Zapisz'}">🔖</button>`;
         return `
           <a class="title-link" href="${v.url}" target="_blank" rel="noopener">
             <div class="thumb-wrap">
@@ -627,7 +629,10 @@
             </div>
           </a>
           <div class="body">
-            <a class="title-link" href="${v.url}" target="_blank" rel="noopener"><h3>${v.title}</h3></a>
+            <div class="card-title-row">
+              <a class="title-link" href="${v.url}" target="_blank" rel="noopener"><h3>${v.title}</h3></a>
+              ${saveBtn}
+            </div>
             <div class="channel">${v.channel || 'Nieznany kanał'} ${langBadge}</div>
             ${reasonEl}
             <div class="stats">
@@ -689,6 +694,10 @@
           div.className = 'video';
           div.style.animationDelay = Math.min(i*30, 400) + 'ms';
           div.innerHTML = aiCardHTML(v);
+          div.querySelector('.btn-save')?.addEventListener('click', e => {
+            e.preventDefault();
+            toggleSave(v, e.currentTarget);
+          });
           container.appendChild(div);
         });
       }
