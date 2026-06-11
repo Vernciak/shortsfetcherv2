@@ -136,6 +136,16 @@
           <option value="">Wszystkie</option>
         </select>
       </div>
+      <div class="group">
+        <label>Okres:</label>
+        <div class="seg" id="c-period">
+          <button data-d="1">24h</button>
+          <button data-d="3">3 dni</button>
+          <button data-d="7">7 dni</button>
+          <button data-d="30">30 dni</button>
+          <button data-d="0" class="active">Wszystko</button>
+        </div>
+      </div>
       <div class="c-hint" id="c-hint"></div>
       <span class="count" id="c-count"></span>
     </div>
@@ -508,9 +518,20 @@
       const sortSel = document.getElementById('c-sort');
       const langSel = document.getElementById('c-lang');
       const catSel = document.getElementById('c-cat');
+      const cPeriodBox = document.getElementById('c-period');
       const hint = document.getElementById('c-hint');
       let allCommentary = [];
       let ytCatNames = {};
+      let cPeriodDays = 0;
+
+      cPeriodBox.querySelectorAll('button').forEach(b => {
+        b.addEventListener('click', () => {
+          cPeriodDays = Number(b.dataset.d);
+          cPeriodBox.querySelectorAll('button').forEach(x => x.classList.remove('active'));
+          b.classList.add('active');
+          renderCommentary();
+        });
+      });
 
       function renderCommentary() {
         const sortBy = sortSel.value;
@@ -519,6 +540,10 @@
         let list = allCommentary.slice();
         if (langFilter) list = list.filter(v => v.lang === langFilter);
         if (catFilter) list = list.filter(v => v.category_id === catFilter);
+        if (cPeriodDays > 0) {
+          const cutoff = Date.now() - cPeriodDays * 86400000;
+          list = list.filter(v => v.published && new Date(v.published).getTime() >= cutoff);
+        }
         list.sort((a, b) => {
           if (sortBy === 'published') return new Date(b.published) - new Date(a.published);
           if (sortBy === 'commentary_score') return (b.commentary_score||0) - (a.commentary_score||0);
