@@ -878,6 +878,7 @@
       let allTags = [];
       let currentSource = '';
       let cloudMetric = 'viral_score';
+      let selectedTerms = new Set();
 
       // Przełącznik chmury
       cloudMetBox.querySelectorAll('button').forEach(b => {
@@ -933,7 +934,22 @@
           </span>`;
         }).join(' ');
         cloudBox.querySelectorAll('.ht-cloud-tag').forEach(el => {
-          el.addEventListener('click', () => openDetail(el.dataset.term, el.dataset.src));
+          if (selectedTerms.has(el.dataset.term)) el.classList.add('ht-selected');
+          el.addEventListener('click', () => {
+            const t = el.dataset.term;
+            if (selectedTerms.has(t)) {
+              selectedTerms.delete(t);
+              el.classList.remove('ht-selected');
+            } else {
+              selectedTerms.add(t);
+              el.classList.add('ht-selected');
+            }
+            updateCopyBtn();
+          });
+          el.addEventListener('dblclick', (e) => {
+            e.preventDefault();
+            openDetail(el.dataset.term, el.dataset.src);
+          });
         });
       }
 
@@ -1057,14 +1073,23 @@
         loadHashtagi();
       });
 
-      document.getElementById('ht-copy').addEventListener('click', function() {
-        const tags = filteredTags();
-        if (!tags.length) return;
-        const text = tags.map(t => (t.source !== 'tag' ? '#' : '') + t.display).join(', ');
+      const copyBtn = document.getElementById('ht-copy');
+
+      function updateCopyBtn() {
+        const n = selectedTerms.size;
+        copyBtn.textContent = n > 0 ? `📋 Kopiuj (${n})` : '📋 Kopiuj';
+      }
+
+      copyBtn.addEventListener('click', function() {
+        const pool = filteredTags();
+        const source = selectedTerms.size > 0
+          ? pool.filter(t => selectedTerms.has(t.term))
+          : pool;
+        if (!source.length) return;
+        const text = source.map(t => (t.source !== 'tag' ? '#' : '') + t.display).join(', ');
         navigator.clipboard.writeText(text).then(() => {
-          const btn = this;
-          btn.textContent = '✅ Skopiowano!';
-          setTimeout(() => { btn.textContent = '📋 Kopiuj'; }, 2000);
+          copyBtn.textContent = '✅ Skopiowano!';
+          setTimeout(updateCopyBtn, 2000);
         });
       });
 
