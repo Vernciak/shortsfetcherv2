@@ -58,6 +58,23 @@ def init_db():
                 saved_at    TIMESTAMPTZ DEFAULT now()
             );
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS video_metadata (
+                video_id    TEXT PRIMARY KEY,
+                title       TEXT,
+                description TEXT,
+                channel     TEXT,
+                channel_id  TEXT,
+                thumbnail   TEXT,
+                tags        TEXT,
+                views       BIGINT DEFAULT 0,
+                likes       BIGINT DEFAULT 0,
+                duration    TEXT,
+                published   TEXT,
+                source      TEXT,
+                updated_at  TIMESTAMPTZ DEFAULT now()
+            );
+        """)
         conn.commit()
 
 
@@ -286,6 +303,47 @@ def get_saved_ids():
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT video_id FROM saved_shorts")
         return [row[0] for row in cur.fetchall()]
+
+
+# ---------- Metadane shortów (dla analizy hashtagów) ----------
+
+def upsert_video_metadata(videos, source):
+    """Upsertuje metadane shortów. Wywołaj po każdym fetchu — zero dodatkowej quota."""
+    if not videos:
+        return
+    import json as _json
+    with get_conn() as conn, conn.cursor() as cur:
+        psycopg2.extras.execute_values(
+            cur,
+            """INSERT INTO video_metadata
+               (video_id, title, description, channel, channel_id, thumbnail,
+                tags, views, likes, duration, published, source)
+               VALUES %s
+               ON CONFLICT (video_id) DO UPDATE SET
+                 title      = EXCLUDED.title,
+                 views      = EXCLUDED.views,
+                 likes      = EXCLUDED.likes,
+                 tags       = EXCLUDED.tags,
+                 thumbnail  = EXCLUDED.thumbnail,
+                 source     = EXCLUDED.source,
+                 updated_at = now()""",
+            [(v.get("id"), v.get("title"), (v.get("description") or "")[:1000],
+              v.get("channel"), v.get("channel_id"), v.get("thumbnail"),
+              _json.dumps(v.get("tags") or []),
+              int(v.get("views") or 0), int(v.get("likes") or 0),
+              v.get("duration"), v.get("published"), source)
+             for v in videos]
+        )
+        conn.commit()
+
+
+def get_all_video_metadata():
+    """Zwraca wszystkie wiersze z video_metadata posortowane malejąco po wyświetleniach."""
+    with get_conn() as conn, conn.cursor(
+        cursor_factory=psycopg2.extras.RealDictCursor
+    ) as cur:
+        cur.execute("SELECT * FROM video_metadata ORDER BY views DESC")
+        return [dict(r) for r in cur.fetchall()]
 
 
 def patch_short(video_id, status=None, note=None):

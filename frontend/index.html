@@ -23,6 +23,7 @@
       <a href="/commentary" data-cat="commentary">🎙️ Commentary</a>
       <a href="/ai" data-cat="ai">🤖 AI</a>
       <a href="/saved" data-cat="saved">🔖 Zapisane</a>
+      <a href="/hashtagi" data-cat="hashtagi">#️⃣ Hashtagi</a>
       <a href="/fun" data-cat="fun">Zagranica 2</a>
       <a href="/zwierzeta" data-cat="zwierzeta">Zwierzęta</a>
       <a href="/nauka" data-cat="nauka">Nauka</a>
@@ -216,6 +217,89 @@
     <div id="saved-videos"></div>
   </div>
 
+  <!-- WIDOK HASHTAGI -->
+  <div id="view-hashtagi" style="display:none">
+    <div class="controls">
+      <div class="group">
+        <label>Źródło:</label>
+        <div class="seg" id="ht-source">
+          <button data-s="" class="active">Wszystko</button>
+          <button data-s="hashtag">#️⃣ Hashtagi</button>
+          <button data-s="tag">🏷️ Tagi</button>
+        </div>
+      </div>
+      <div class="group">
+        <label for="ht-sort">Sortuj:</label>
+        <select id="ht-sort">
+          <option value="viral_score">Viral score (mediana)</option>
+          <option value="reach">Łączny zasięg</option>
+          <option value="count">Liczba shortów</option>
+          <option value="channels">Liczba kanałów</option>
+        </select>
+      </div>
+      <div class="group">
+        <label for="ht-pula">Pula:</label>
+        <select id="ht-pula">
+          <option value="">Wszystkie</option>
+          <option value="commentary">🎙️ Commentary</option>
+          <option value="ai">🤖 AI</option>
+          <option value="hity">⚡ Hity</option>
+        </select>
+      </div>
+      <div class="group">
+        <label for="ht-mincount">Min. shortów:</label>
+        <input type="number" id="ht-mincount" value="2" min="1" max="100" style="width:64px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px 8px;font-size:13px;font-family:inherit">
+      </div>
+      <div class="group">
+        <label>
+          <input type="checkbox" id="ht-hide-generic" checked style="accent-color:var(--accent);vertical-align:middle">
+          Ukryj generyczne
+        </label>
+      </div>
+      <div class="group">
+        <label>Chmura:</label>
+        <div class="seg" id="ht-cloud-metric">
+          <button data-m="viral_score" class="active">Viral</button>
+          <button data-m="count">Częstość</button>
+          <button data-m="reach">Zasięg</button>
+        </div>
+      </div>
+      <button id="ht-refresh" style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:7px 16px;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer">🔄 Odśwież</button>
+      <span class="count" id="ht-count"></span>
+    </div>
+
+    <!-- Chmura tagów -->
+    <div id="ht-cloud-wrap">
+      <div id="ht-cloud"></div>
+    </div>
+
+    <!-- Tabela -->
+    <div id="ht-table-wrap">
+      <table id="ht-table">
+        <thead>
+          <tr>
+            <th data-col="display">Tag / Hashtag</th>
+            <th data-col="source">Źródło</th>
+            <th data-col="count">Shorty</th>
+            <th data-col="channels">Kanały</th>
+            <th data-col="reach">Zasięg</th>
+            <th data-col="median_views">Mediana wyśw.</th>
+          </tr>
+        </thead>
+        <tbody id="ht-tbody"></tbody>
+      </table>
+    </div>
+
+    <!-- Panel szczegółów — karty shortów dla wybranego tagu -->
+    <div id="ht-detail" style="display:none">
+      <div class="ht-detail-header">
+        <span id="ht-detail-title"></span>
+        <button id="ht-detail-close">✕ Zamknij</button>
+      </div>
+      <div id="ht-detail-videos"></div>
+    </div>
+  </div>
+
   <!-- PANEL ZARZĄDZANIA -->
   <div id="view-manage" style="display:none">
     <div class="manage-wrap">
@@ -252,7 +336,7 @@
 
   <script>
     const path = window.location.pathname;
-    const valid = ["viral","hity","trendy","commentary","ai","saved","nauka","zwierzeta","fun","k1","k2","k3","k4","k5","k6","manage"];
+    const valid = ["viral","hity","trendy","commentary","ai","saved","hashtagi","nauka","zwierzeta","fun","k1","k2","k3","k4","k5","k6","manage"];
     let category = "main";
     valid.forEach(c => { if (path === "/" + c) category = c; });
 
@@ -770,6 +854,208 @@
       langSel.addEventListener('change', renderAI);
       maxpcSel.addEventListener('change', renderAI);
       loadAI();
+    }
+
+    // ---------- TRYB: HASHTAGI ----------
+    else if (category === "hashtagi") {
+      document.getElementById('view-feed').style.display = 'none';
+      document.getElementById('view-hashtagi').style.display = 'block';
+
+      const sourceBox   = document.getElementById('ht-source');
+      const sortSel     = document.getElementById('ht-sort');
+      const pulaSel     = document.getElementById('ht-pula');
+      const minCountInp = document.getElementById('ht-mincount');
+      const hideGenChk  = document.getElementById('ht-hide-generic');
+      const cloudBox    = document.getElementById('ht-cloud');
+      const tbody       = document.getElementById('ht-tbody');
+      const detailDiv   = document.getElementById('ht-detail');
+      const detailTitle = document.getElementById('ht-detail-title');
+      const detailVids  = document.getElementById('ht-detail-videos');
+      const refreshBtn  = document.getElementById('ht-refresh');
+      const cloudMetBox = document.getElementById('ht-cloud-metric');
+
+      let allTags = [];
+      let currentSource = '';
+      let cloudMetric = 'viral_score';
+
+      // Przełącznik chmury
+      cloudMetBox.querySelectorAll('button').forEach(b => {
+        b.addEventListener('click', () => {
+          cloudMetric = b.dataset.m;
+          cloudMetBox.querySelectorAll('button').forEach(x => x.classList.remove('active'));
+          b.classList.add('active');
+          renderCloud(filteredTags());
+        });
+      });
+
+      // Przełącznik źródła
+      sourceBox.querySelectorAll('button').forEach(b => {
+        b.addEventListener('click', () => {
+          currentSource = b.dataset.s;
+          sourceBox.querySelectorAll('button').forEach(x => x.classList.remove('active'));
+          b.classList.add('active');
+          renderAll();
+        });
+      });
+
+      function filteredTags() {
+        let list = allTags.slice();
+        if (currentSource) list = list.filter(t => t.source === currentSource);
+        if (hideGenChk.checked) list = list.filter(t => !t.is_generic);
+        const mc = parseInt(minCountInp.value) || 1;
+        list = list.filter(t => t.count >= mc);
+        return list;
+      }
+
+      function fmt(n) {
+        if (n >= 1e6) return (n/1e6).toFixed(1) + 'M';
+        if (n >= 1e3) return (n/1e3).toFixed(0) + 'k';
+        return String(n);
+      }
+
+      const SRC_LABEL = {hashtag: '#️⃣ hashtag', tag: '🏷️ tag', oba: '🔗 oba'};
+      const SRC_COLOR = {hashtag: '#4dd0e1', tag: '#f59e0b', oba: '#a78bfa'};
+
+      function renderCloud(tags) {
+        if (!tags.length) { cloudBox.innerHTML = '<p style="color:var(--text-dim);text-align:center">Brak danych.</p>'; return; }
+        const top = tags.slice(0, 80);
+        const max = Math.max(...top.map(t => t[cloudMetric] || 1));
+        const min = Math.min(...top.map(t => t[cloudMetric] || 0));
+        const range = max - min || 1;
+        cloudBox.innerHTML = top.map(t => {
+          const norm = (t[cloudMetric] - min) / range;
+          const size = 12 + Math.round(norm * 28); // 12px–40px
+          const col = SRC_COLOR[t.source] || 'var(--text-dim)';
+          return `<span class="ht-cloud-tag" data-term="${t.term}" data-src="${t.source}"
+            style="font-size:${size}px;color:${col}" title="${SRC_LABEL[t.source]} • ${fmt(t.count)} shortów • mediana ${fmt(t.median_views)} wyśw.">
+            ${t.source === 'hashtag' || t.source === 'oba' ? '#' : ''}${t.display}
+          </span>`;
+        }).join(' ');
+        cloudBox.querySelectorAll('.ht-cloud-tag').forEach(el => {
+          el.addEventListener('click', () => openDetail(el.dataset.term, el.dataset.src));
+        });
+      }
+
+      let tableSortCol = 'viral_score';
+      let tableSortAsc = false;
+
+      function renderTable(tags) {
+        const headers = document.querySelectorAll('#ht-table thead th');
+        headers.forEach(th => {
+          th.classList.remove('sort-asc', 'sort-desc');
+          if (th.dataset.col === tableSortCol)
+            th.classList.add(tableSortAsc ? 'sort-asc' : 'sort-desc');
+        });
+
+        const sorted = tags.slice().sort((a, b) => {
+          const av = a[tableSortCol] ?? a.display, bv = b[tableSortCol] ?? b.display;
+          if (typeof av === 'string') return tableSortAsc ? av.localeCompare(bv) : bv.localeCompare(av);
+          return tableSortAsc ? av - bv : bv - av;
+        });
+
+        tbody.innerHTML = sorted.slice(0, 300).map(t => `
+          <tr class="ht-row" data-term="${t.term}" data-src="${t.source}">
+            <td class="ht-tag-cell">
+              <span class="ht-tag-name">${t.source !== 'tag' ? '#' : ''}${t.display}</span>
+              ${t.is_generic ? '<span class="ht-generic-badge">generyczny</span>' : ''}
+            </td>
+            <td><span class="badge-ht-src" style="color:${SRC_COLOR[t.source]}">${SRC_LABEL[t.source]}</span></td>
+            <td>${t.count}</td>
+            <td>${t.channels}</td>
+            <td>${fmt(t.reach)}</td>
+            <td>${fmt(t.median_views)}</td>
+          </tr>`).join('');
+
+        tbody.querySelectorAll('.ht-row').forEach(row => {
+          row.addEventListener('click', () => openDetail(row.dataset.term, row.dataset.src));
+        });
+      }
+
+      function renderAll() {
+        const tags = filteredTags();
+        document.getElementById('ht-count').textContent = tags.length + ' tagów';
+        renderCloud(tags);
+        renderTable(tags);
+        detailDiv.style.display = 'none';
+      }
+
+      // Klik w nagłówek tabeli — sortowanie
+      document.querySelectorAll('#ht-table thead th').forEach(th => {
+        th.style.cursor = 'pointer';
+        th.addEventListener('click', () => {
+          if (tableSortCol === th.dataset.col) tableSortAsc = !tableSortAsc;
+          else { tableSortCol = th.dataset.col; tableSortAsc = false; }
+          renderTable(filteredTags());
+        });
+      });
+
+      function openDetail(term, srcHint) {
+        detailDiv.style.display = 'block';
+        detailTitle.innerHTML = `<b>${srcHint !== 'tag' ? '#' : ''}${term}</b> — shorty`;
+        detailVids.innerHTML = '<div class="state"><div class="spinner"></div>Ładuję…</div>';
+        detailDiv.scrollIntoView({behavior:'smooth', block:'start'});
+        const srcParam = srcHint === 'hashtag' ? '&source=hashtag' : srcHint === 'tag' ? '&source=tag' : '';
+        fetch(`/api/hashtagi/videos?term=${encodeURIComponent(term)}${srcParam}`)
+          .then(r => r.json())
+          .then(data => {
+            const vids = data.videos || [];
+            if (!vids.length) { detailVids.innerHTML = '<div class="state">Brak shortów.</div>'; return; }
+            detailTitle.innerHTML += ` <span class="count">(${data.total} łącznie, pokazuję ${vids.length})</span>`;
+            detailVids.innerHTML = '';
+            loadSavedIds().then(() => {
+              vids.forEach((v, i) => {
+                const div = document.createElement('div');
+                div.className = 'video';
+                div.style.animationDelay = Math.min(i*20, 300) + 'ms';
+                div.innerHTML = cardHTML(v);
+                div.querySelector('.btn-save')?.addEventListener('click', e => {
+                  e.preventDefault();
+                  toggleSave(v, e.currentTarget);
+                });
+                detailVids.appendChild(div);
+              });
+            });
+          })
+          .catch(() => { detailVids.innerHTML = '<div class="state">❌ Błąd.</div>'; });
+      }
+
+      document.getElementById('ht-detail-close').addEventListener('click', () => {
+        detailDiv.style.display = 'none';
+      });
+
+      function loadHashtagi() {
+        cloudBox.innerHTML = '<div class="state"><div class="spinner"></div>Analizuję hashtagi…</div>';
+        tbody.innerHTML = '';
+        refreshBtn.disabled = true;
+        const sort = sortSel.value;
+        const pula = pulaSel.value;
+        const mc = minCountInp.value || 1;
+        fetch(`/api/hashtagi?sort=${sort}&min_count=${mc}&pula=${pula}`)
+          .then(r => r.json())
+          .then(data => {
+            allTags = data.tags || [];
+            document.getElementById('ht-count').textContent = allTags.length + ' tagów';
+            if (data.total_videos !== undefined) {
+              const q = document.getElementById('quota');
+              q.innerHTML = `Baza: ${data.total_videos} shortów` +
+                (data.cached ? ' <span class="cached">• z cache</span>' : '');
+              q.style.display = 'block';
+            }
+            renderAll();
+          })
+          .catch(() => { cloudBox.innerHTML = '<div class="state">❌ Błąd ładowania.</div>'; })
+          .finally(() => { refreshBtn.disabled = false; });
+      }
+
+      sortSel.addEventListener('change', loadHashtagi);
+      pulaSel.addEventListener('change', loadHashtagi);
+      minCountInp.addEventListener('change', renderAll);
+      hideGenChk.addEventListener('change', renderAll);
+      refreshBtn.addEventListener('click', () => {
+        _cache_bust_hashtagi = Date.now(); // sygnał do wymuszenia reload
+        loadHashtagi();
+      });
+      loadHashtagi();
     }
 
     // ---------- TRYB: HITY ----------

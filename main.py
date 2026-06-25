@@ -1,6 +1,6 @@
 print("✅ Ładuję mój właściwy main.py")
 from flask import Flask, jsonify, send_from_directory, request, Response
-import os, json, requests, time, statistics
+import os, json, requests, time, statistics, re
 from dotenv import load_dotenv
 import isodate
 import db
@@ -119,6 +119,7 @@ except Exception as e:
 @app.route('/commentary')
 @app.route('/ai')
 @app.route('/saved')
+@app.route('/hashtagi')
 @app.route('/manage')
 def index():
     return send_from_directory('frontend', 'index.html')
@@ -339,6 +340,10 @@ def get_hits():
     hits.sort(key=lambda v: v["views"], reverse=True)
     payload = {"videos": hits, "quota_used": quota_used, "cached": False}
     _cache["hity"] = (now, payload)
+    try:
+        db.upsert_video_metadata(all_videos, "hity")
+    except Exception as e:
+        print(f"⚠️ upsert_video_metadata (hity): {e}")
     print(f"🔥 Hity: {len(hits)} wyników, ~{quota_used} quota")
     return jsonify(payload)
 
@@ -563,6 +568,10 @@ def get_commentary():
     result.sort(key=lambda v: v["commentary_score"], reverse=True)
     payload = {"videos": result, "quota_used": quota_used, "cached": False}
     _cache["commentary"] = (now, payload)
+    try:
+        db.upsert_video_metadata(pool, "commentary")
+    except Exception as e:
+        print(f"⚠️ upsert_video_metadata (commentary): {e}")
     print(f"🎙️ Commentary: {len(result)} wyników (pula {len(pool)}), ~{quota_used} quota")
     return jsonify(payload)
 
@@ -606,6 +615,10 @@ def get_all_videos():
 
     payload = {"quota_used": quota_used, "videos": videos, "cached": False}
     _cache[cache_key] = (now, payload)
+    try:
+        db.upsert_video_metadata(videos, cache_key)
+    except Exception as e:
+        print(f"⚠️ upsert_video_metadata (feed): {e}")
     print(f"🔢 Zużyto ~{quota_used} jednostek quota (kategoria: {cache_key})")
     return jsonify(payload)
 
@@ -940,10 +953,28 @@ def get_ai():
         "gemini_cached": n_cached,
     }
     _cache["ai"] = (now, payload)
+    try:
+        db.upsert_video_metadata(pool, "ai")
+    except Exception as e:
+        print(f"⚠️ upsert_video_metadata (ai): {e}")
     return jsonify(payload)
 
 
 # ---------- Zapisane shorty ----------
+
+# ---------- Parametry endpointu Hashtagi ----------
+# Tagi generyczne — dominują, zaśmiecają; edytowalna lista
+HASHTAGI_GENERYCZNE = frozenset({
+    "shorts", "short", "viral", "fyp", "foryou", "foryoupage", "trending",
+    "youtubeshorts", "video", "reels", "tiktok", "youtube", "shortvideo",
+    "shortsvideo", "viralvideo", "virals", "explore", "trend",
+    "subscribe", "like", "share", "follow", "comment", "yt", "ytshorts",
+    "новое", "хайп", "repost",
+})
+# TTL cache wyników hashtagów (1h — analiza jest szybka, nie zużywa quota)
+HASHTAGI_CACHE_TTL = 3600
+# Regex do wyciągania hashtagów z tekstu (obsługuje unicode: ą,ę,ü,ñ, cyrylicę)
+_HASHTAG_RE = re.compile(r'#(\w+)', re.UNICODE)
 
 VALID_STATUSES = {"todo", "doing", "done"}
 
@@ -1005,6 +1036,182 @@ def api_patch_short(video_id):
         return jsonify({"ok": ok})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ---------- Endpoint Hashtagi ----------
+
+@app.route('/api/hashtagi')
+def get_hashtagi():
+    sort_by = request.args.get("sort", "viral_score")
+    if sort_by not in ("count", "reach", "viral_score", "channels"):
+        sort_by = "viral_score"
+    min_count = max(1, int(request.args.get("min_count", 2) or 2))
+    source_filter = request.args.get("source", "")   # "hashtag" / "tag" / ""
+    pula_filter = request.args.get("pula", "")        # "commentary" / "ai" / "hity" / ""
+
+    cache_key = f"hashtagi_{sort_by}_{min_count}_{source_filter}_{pula_filter}"
+    now = time.time()
+    cached = _cache.get(cache_key)
+    if cached and now - cached[0] < HASHTAGI_CACHE_TTL:
+        payload = dict(cached[1])
+        payload["cached"] = True
+        return jsonify(payload)
+
+    try:
+        rows = db.get_all_video_metadata()
+    except Exception as e:
+        return jsonify({"tags": [], "error": str(e), "cached": False}), 500
+
+    if pula_filter:
+        rows = [r for r in rows if r.get("source") == pula_filter]
+
+    from collections import defaultdict
+
+    # term_lower -> {display_variants, hashtag_vids, tag_vids, channels}
+    term_data = {}
+
+    def _get_td(lower):
+        if lower not in term_data:
+            term_data[lower] = {
+                "dv": defaultdict(int),  # display variant -> count
+                "h": {},                  # video_id -> views (hashtag source)
+                "t": {},                  # video_id -> views (tag source)
+                "ch": set(),
+            }
+        return term_data[lower]
+
+    for row in rows:
+        vid_id = row["video_id"]
+        views = int(row.get("views") or 0)
+        channel_id = row.get("channel_id") or ""
+        text = (row.get("title") or "") + " " + (row.get("description") or "")
+
+        # Źródło 1: hashtagi z title+description
+        for m in _HASHTAG_RE.finditer(text):
+            raw = m.group(1)
+            lower = raw.lower()
+            td = _get_td(lower)
+            td["dv"][raw] += 1
+            td["h"][vid_id] = views
+            td["ch"].add(channel_id)
+
+        # Źródło 2: tagi-metadane
+        tags_raw = row.get("tags")
+        if tags_raw:
+            try:
+                tags_list = json.loads(tags_raw) if isinstance(tags_raw, str) else (tags_raw or [])
+            except Exception:
+                tags_list = []
+            for tag in tags_list:
+                raw = (tag or "").strip()
+                if not raw:
+                    continue
+                lower = raw.lower()
+                td = _get_td(lower)
+                td["dv"][raw] += 1
+                td["t"][vid_id] = views
+                td["ch"].add(channel_id)
+
+    # Złóż wyniki
+    results = []
+    for lower, td in term_data.items():
+        h_count = len(td["h"])
+        t_count = len(td["t"])
+
+        if h_count > 0 and t_count > 0:
+            src = "oba"
+        elif h_count > 0:
+            src = "hashtag"
+        else:
+            src = "tag"
+
+        if source_filter and src != source_filter:
+            continue
+
+        total_count = len({**td["h"], **td["t"]})
+        if total_count < min_count:
+            continue
+
+        display = max(td["dv"], key=td["dv"].__getitem__)
+        all_views = list({**td["h"], **td["t"]}.values())
+        reach = sum(all_views)
+        med_views = int(statistics.median(all_views)) if all_views else 0
+
+        results.append({
+            "term": lower,
+            "display": display,
+            "source": src,
+            "count": total_count,
+            "hashtag_count": h_count,
+            "tag_count": t_count,
+            "reach": reach,
+            "median_views": med_views,
+            "viral_score": med_views,
+            "channels": len(td["ch"]),
+            "is_generic": lower in HASHTAGI_GENERYCZNE,
+        })
+
+    results.sort(key=lambda r: r[sort_by], reverse=True)
+
+    payload = {
+        "tags": results,
+        "total_videos": len(rows),
+        "cached": False,
+        "generyczne": sorted(HASHTAGI_GENERYCZNE),
+    }
+    _cache[cache_key] = (now, payload)
+    return jsonify(payload)
+
+
+@app.route('/api/hashtagi/videos')
+def get_hashtagi_videos():
+    term = (request.args.get("term") or "").lower()
+    source_filter = request.args.get("source", "")  # "hashtag" / "tag" / ""
+    if not term:
+        return jsonify({"videos": [], "total": 0})
+
+    try:
+        rows = db.get_all_video_metadata()
+    except Exception as e:
+        return jsonify({"videos": [], "error": str(e)}), 500
+
+    matching = []
+    for row in rows:
+        text = (row.get("title") or "") + " " + (row.get("description") or "")
+        found_hashtag = any(m.group(1).lower() == term for m in _HASHTAG_RE.finditer(text))
+
+        found_tag = False
+        tags_raw = row.get("tags")
+        if tags_raw:
+            try:
+                tags_list = json.loads(tags_raw) if isinstance(tags_raw, str) else (tags_raw or [])
+                found_tag = any((t or "").lower().strip() == term for t in tags_list)
+            except Exception:
+                pass
+
+        if source_filter == "hashtag" and not found_hashtag:
+            continue
+        if source_filter == "tag" and not found_tag:
+            continue
+        if not source_filter and not (found_hashtag or found_tag):
+            continue
+
+        matching.append({
+            "id": row["video_id"],
+            "title": row.get("title") or "",
+            "channel": row.get("channel") or "",
+            "channel_id": row.get("channel_id") or "",
+            "thumbnail": row.get("thumbnail") or f"https://i.ytimg.com/vi/{row['video_id']}/mqdefault.jpg",
+            "url": f"https://www.youtube.com/shorts/{row['video_id']}",
+            "views": int(row.get("views") or 0),
+            "likes": int(row.get("likes") or 0),
+            "published": row.get("published") or "",
+            "duration": row.get("duration") or "",
+            "source": row.get("source") or "",
+        })
+
+    matching.sort(key=lambda v: v["views"], reverse=True)
+    return jsonify({"videos": matching[:60], "total": len(matching)})
 
 
 if __name__ == '__main__':
