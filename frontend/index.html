@@ -265,6 +265,7 @@
         </div>
       </div>
       <button id="ht-refresh" style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:7px 16px;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer">🔄 Odśwież</button>
+      <button id="ht-copy" style="background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:7px 16px;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer">📋 Kopiuj</button>
       <span class="count" id="ht-count"></span>
     </div>
 
@@ -1052,9 +1053,21 @@
       minCountInp.addEventListener('change', renderAll);
       hideGenChk.addEventListener('change', renderAll);
       refreshBtn.addEventListener('click', () => {
-        _cache_bust_hashtagi = Date.now(); // sygnał do wymuszenia reload
+        _cache_bust_hashtagi = Date.now();
         loadHashtagi();
       });
+
+      document.getElementById('ht-copy').addEventListener('click', function() {
+        const tags = filteredTags();
+        if (!tags.length) return;
+        const text = tags.map(t => (t.source !== 'tag' ? '#' : '') + t.display).join(', ');
+        navigator.clipboard.writeText(text).then(() => {
+          const btn = this;
+          btn.textContent = '✅ Skopiowano!';
+          setTimeout(() => { btn.textContent = '📋 Kopiuj'; }, 2000);
+        });
+      });
+
       loadHashtagi();
     }
 
