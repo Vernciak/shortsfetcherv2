@@ -138,6 +138,12 @@
         </select>
       </div>
       <div class="group">
+        <label for="c-country">Kraj:</label>
+        <select id="c-country">
+          <option value="">Wszystkie</option>
+        </select>
+      </div>
+      <div class="group">
         <label>Okres:</label>
         <div class="seg" id="c-period">
           <button data-d="1">24h</button>
@@ -604,6 +610,7 @@
       const sortSel = document.getElementById('c-sort');
       const langSel = document.getElementById('c-lang');
       const catSel = document.getElementById('c-cat');
+      const countrySel = document.getElementById('c-country');
       const cPeriodBox = document.getElementById('c-period');
       const hint = document.getElementById('c-hint');
       let allCommentary = [];
@@ -623,9 +630,11 @@
         const sortBy = sortSel.value;
         const langFilter = langSel.value;
         const catFilter = catSel.value;
+        const countryFilter = countrySel.value;
         let list = allCommentary.slice();
         if (langFilter) list = list.filter(v => v.lang === langFilter);
         if (catFilter) list = list.filter(v => v.category_id === catFilter);
+        if (countryFilter) list = list.filter(v => v.country === countryFilter);
         if (cPeriodDays > 0) {
           const cutoff = Date.now() - cPeriodDays * 86400000;
           list = list.filter(v => v.published && new Date(v.published).getTime() >= cutoff);
@@ -683,6 +692,15 @@
             catSel.appendChild(opt);
           });
 
+          // Wypełnij dropdown krajów — tylko te które faktycznie wystąpiły
+          const countries = [...new Set(allCommentary.map(v => v.country).filter(Boolean))].sort();
+          countries.forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c;
+            opt.textContent = (allCommentary.find(v => v.country === c)?.country_flag || '') + ' ' + c;
+            countrySel.appendChild(opt);
+          });
+
           renderCommentary();
         })
         .catch(() => {
@@ -692,6 +710,7 @@
       sortSel.addEventListener('change', renderCommentary);
       langSel.addEventListener('change', renderCommentary);
       catSel.addEventListener('change', renderCommentary);
+      countrySel.addEventListener('change', renderCommentary);
     }
 
     // ---------- TRYB: AI ----------
