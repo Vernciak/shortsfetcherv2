@@ -258,6 +258,14 @@ def _country_flag(code):
     return chr(0x1F1E6 + ord(code[0]) - 65) + chr(0x1F1E6 + ord(code[1]) - 65)
 
 
+# Fallback: wykryty język -> najbardziej prawdopodobny kraj (gdy kanał nie podaje kraju)
+_LANG_TO_COUNTRY = {
+    "en": "US", "pl": "PL", "ru": "RU", "es": "ES", "pt": "BR", "de": "DE",
+    "fr": "FR", "it": "IT", "uk": "UA", "tr": "TR", "id": "ID", "hi": "IN",
+    "ar": "SA",
+}
+
+
 def _enrich_with_country(videos):
     """Dodaje 'country' i 'country_flag' do filmów na podstawie kraju kanału.
 
@@ -313,6 +321,14 @@ def _enrich_with_country(videos):
 
     for v in videos:
         country = known.get(v.get("channel_id"))
+        v["country_guessed"] = False
+        if not country:
+            # Fallback: szacuj kraj po języku tytułu/opisu
+            _, lang = score_commentary(v.get("title", ""), v.get("description", ""),
+                                       v.get("duration_seconds", 0), False)
+            country = _LANG_TO_COUNTRY.get(lang)
+            if country:
+                v["country_guessed"] = True
         v["country"] = country or ""
         v["country_flag"] = _country_flag(country)
     return quota

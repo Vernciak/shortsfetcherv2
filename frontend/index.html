@@ -404,7 +404,7 @@
       const date = v.published ? new Date(v.published).toLocaleDateString('pl-PL') : '';
       const extraBadge = badge ? `<span class="badge-extra">${badge}</span>` : '';
       const langBadge = v.lang && v.lang !== '?' ? `<span class="badge-lang">${v.lang_flag || ''} ${v.lang}</span>` : '';
-      const countryBadge = v.country_flag ? `<span class="badge-lang" title="Kraj kanału: ${v.country}">${v.country_flag} ${v.country}</span>` : '';
+      const countryBadge = v.country_flag ? `<span class="badge-lang" title="${v.country_guessed ? 'Kraj szacowany po języku tytułu/opisu' : 'Kraj kanału'}: ${v.country}">${v.country_flag} ${v.country_guessed ? '≈' : ''}${v.country}</span>` : '';
       const scoreBadge = v.commentary_score != null ? `<span class="badge-score">★${v.commentary_score}</span>` : '';
       const vphStr = v.vph != null ? `<span title="wyświetlenia/h">⚡ <b>${fmt(v.vph)}/h</b></span>` : '';
       const engStr = v.engagement_rate != null ? `<span title="engagement">💬 <b>${v.engagement_rate}%</b></span>` : '';
@@ -744,7 +744,7 @@
           ? `<div class="card-ai-reason" title="${v.ai_reason.replace(/"/g,'&quot;')}">💬 ${v.ai_reason.slice(0,100).replace(/</g,'&lt;')}${v.ai_reason.length>100?'…':''}</div>`
           : '';
         const langBadge = v.lang && v.lang !== '?' ? `<span class="badge-lang">${v.lang_flag||''} ${v.lang}</span>` : '';
-        const countryBadge = v.country_flag ? `<span class="badge-lang" title="Kraj kanału: ${v.country}">${v.country_flag} ${v.country}</span>` : '';
+        const countryBadge = v.country_flag ? `<span class="badge-lang" title="${v.country_guessed ? 'Kraj szacowany po języku tytułu/opisu' : 'Kraj kanału'}: ${v.country}">${v.country_flag} ${v.country_guessed ? '≈' : ''}${v.country}</span>` : '';
         const viral = (Number(v.views)||0) >= 100000;
         const date = v.published ? new Date(v.published).toLocaleDateString('pl-PL') : '';
         const vphStr = v.vph != null ? `<span title="wyświetlenia/h">⚡ <b>${fmt(v.vph)}/h</b></span>` : '';
