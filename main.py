@@ -250,6 +250,79 @@ def _fetch_video_details_batch(video_ids, key_index_ref):
     return videos, quota
 
 
+def _country_flag(code):
+    """Kod ISO (np. 'PL') -> emoji flagi. Pusty/None -> ''."""
+    code = (code or "").upper()
+    if len(code) != 2 or not code.isalpha():
+        return ""
+    return chr(0x1F1E6 + ord(code[0]) - 65) + chr(0x1F1E6 + ord(code[1]) - 65)
+
+
+def _enrich_with_country(videos):
+    """Dodaje 'country' i 'country_flag' do filmów na podstawie kraju kanału.
+
+    Kraj kanału trzymamy na stałe w DB (channel_countries) — brakujące pobieramy
+    jednorazowo przez channels.list (1 jednostka quota per 50 kanałów).
+    Zwraca zużytą quota.
+    """
+    channel_ids = list({v.get("channel_id") for v in videos if v.get("channel_id")})
+    if not channel_ids:
+        return 0
+
+    try:
+        known = db.get_channel_countries(channel_ids)
+    except Exception as e:
+        print(f"⚠️ channel_countries read: {e}")
+        known = {}
+
+    missing = [ch for ch in channel_ids if ch not in known]
+    quota = 0
+    if missing and API_KEYS:
+        fetched = {}
+        key_idx = [0]
+        for batch in _chunk(missing, 50):
+            ids = ",".join(batch)
+            attempts = 0
+            while attempts < len(API_KEYS):
+                try:
+                    url = ("https://www.googleapis.com/youtube/v3/channels"
+                           f"?part=snippet&id={ids}&maxResults=50"
+                           f"&key={API_KEYS[key_idx[0] % len(API_KEYS)]}")
+                    res = requests.get(url, timeout=10).json()
+                    quota += 1
+                    if 'error' in res:
+                        key_idx[0] += 1
+                        attempts += 1
+                        continue
+                    for item in res.get("items", []):
+                        fetched[item["id"]] = item["snippet"].get("country")
+                    break
+                except Exception as e:
+                    print(f"Błąd channels country batch: {e}")
+                    key_idx[0] += 1
+                    attempts += 1
+                    time.sleep(0.3)
+        # Kanały bez odpowiedzi też zapisz jako None, żeby nie pytać w kółko
+        for ch in batchless_missing(missing, fetched):
+            fetched.setdefault(ch, None)
+        try:
+            db.save_channel_countries(fetched)
+        except Exception as e:
+            print(f"⚠️ channel_countries write: {e}")
+        known.update(fetched)
+
+    for v in videos:
+        country = known.get(v.get("channel_id"))
+        v["country"] = country or ""
+        v["country_flag"] = _country_flag(country)
+    return quota
+
+
+def batchless_missing(missing, fetched):
+    """Kanały o które pytaliśmy, ale API nic nie zwróciło (np. usunięte)."""
+    return [ch for ch in missing if ch not in fetched]
+
+
 @app.route('/api/hits')
 def get_hits():
     now = time.time()
@@ -338,6 +411,7 @@ def get_hits():
             hits.append(v)
 
     hits.sort(key=lambda v: v["views"], reverse=True)
+    quota_used += _enrich_with_country(hits)
     payload = {"videos": hits, "quota_used": quota_used, "cached": False}
     _cache["hity"] = (now, payload)
     try:
@@ -427,6 +501,7 @@ def get_trending():
             break
 
     videos.sort(key=lambda v: v["views"], reverse=True)
+    quota_used += _enrich_with_country(videos)
     payload = {"videos": videos, "quota_used": quota_used, "cached": False, "region": region}
     _cache[cache_key] = (now, payload)
     print(f"🌍 Trendy {region}: {len(videos)} shortów, ~{quota_used} quota")
@@ -566,6 +641,7 @@ def get_commentary():
         result.append(v)
 
     result.sort(key=lambda v: v["commentary_score"], reverse=True)
+    quota_used += _enrich_with_country(result)
     payload = {"videos": result, "quota_used": quota_used, "cached": False}
     _cache["commentary"] = (now, payload)
     try:
@@ -612,6 +688,7 @@ def get_all_videos():
 
     videos, quota_used = fetch_videos_for_channels(channels)
     videos.sort(key=lambda v: v["published"], reverse=True)
+    quota_used += _enrich_with_country(videos)
 
     payload = {"quota_used": quota_used, "videos": videos, "cached": False}
     _cache[cache_key] = (now, payload)
@@ -939,6 +1016,7 @@ def get_ai():
                                 if v["views"] > 0 else 0)
 
     result.sort(key=lambda v: v.get("ai_confidence", 0), reverse=True)
+    quota_used += _enrich_with_country(result)
 
     n_new = len(new_ratings)
     n_cached = len(candidate_ids) - len(uncached)

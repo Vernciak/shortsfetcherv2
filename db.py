@@ -75,6 +75,13 @@ def init_db():
                 updated_at  TIMESTAMPTZ DEFAULT now()
             );
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS channel_countries (
+                channel_id  TEXT PRIMARY KEY,
+                country     TEXT,
+                fetched_at  TIMESTAMPTZ DEFAULT now()
+            );
+        """)
         conn.commit()
 
 
@@ -303,6 +310,36 @@ def get_saved_ids():
     with get_conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT video_id FROM saved_shorts")
         return [row[0] for row in cur.fetchall()]
+
+
+# ---------- Kraje kanałów ----------
+
+def get_channel_countries(channel_ids):
+    """Zwraca dict channel_id -> country (może być None gdy kanał nie podaje kraju)."""
+    if not channel_ids:
+        return {}
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT channel_id, country FROM channel_countries WHERE channel_id = ANY(%s)",
+            (list(channel_ids),)
+        )
+        return {row[0]: row[1] for row in cur.fetchall()}
+
+
+def save_channel_countries(mapping):
+    """Upsertuje dict channel_id -> country (None też zapisujemy, żeby nie pytać ponownie)."""
+    if not mapping:
+        return
+    with get_conn() as conn, conn.cursor() as cur:
+        psycopg2.extras.execute_values(
+            cur,
+            """INSERT INTO channel_countries (channel_id, country)
+               VALUES %s
+               ON CONFLICT (channel_id) DO UPDATE SET
+                 country = EXCLUDED.country, fetched_at = now()""",
+            list(mapping.items())
+        )
+        conn.commit()
 
 
 # ---------- Metadane shortów (dla analizy hashtagów) ----------
