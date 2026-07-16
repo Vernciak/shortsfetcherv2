@@ -120,6 +120,7 @@ except Exception as e:
 @app.route('/ai')
 @app.route('/saved')
 @app.route('/hashtagi')
+@app.route('/algrow')
 @app.route('/manage')
 def index():
     return send_from_directory('frontend', 'index.html')
@@ -1056,6 +1057,23 @@ def get_ai():
 
 # ---------- Zapisane shorty ----------
 
+# ---------- Parametry Algrow (płatne API do odkrywania) ----------
+ALGROW_API_KEY = os.getenv("ALGROW_API_KEY")
+# Bazowy URL REST — edytowalny (docs: https://algrow.online/api/docs)
+ALGROW_API_BASE = os.getenv("ALGROW_API_BASE", "https://algrow.online/api/v1")
+# Ścieżki endpointów — dostosuj jeśli docs podają inne
+ALGROW_EP_VIRAL_VIDEOS = "/search_viral_videos"
+ALGROW_EP_SHORTS_CHANNELS = "/search_shorts_channels"
+# Mocny cache — API kosztuje kredyty (6h)
+ALGROW_CACHE_TTL = 21600
+# Domyślne progi wyszukiwania (edytowalne)
+ALGROW_MIN_OUTLIER = 3.0        # film zrobił >= 3x normy swojego kanału
+ALGROW_UPLOADED_DAYS = 7        # z ostatnich 7 dni
+ALGROW_MIN_VIEWS = 10000        # min. wyświetleń filmu
+ALGROW_CH_MAX_SUBS = 10000      # sekcja B: kanały do 10k subów
+ALGROW_CH_MAX_AGE = 90          # sekcja B: kanały młodsze niż 90 dni
+ALGROW_TIMEOUT = 30
+
 # ---------- Parametry endpointu Hashtagi ----------
 # Tagi generyczne — dominują, zaśmiecają; edytowalna lista
 HASHTAGI_GENERYCZNE = frozenset({
@@ -1130,6 +1148,201 @@ def api_patch_short(video_id):
         return jsonify({"ok": ok})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ---------- Endpointy Algrow (płatne odkrywanie) ----------
+
+def _algrow_call(endpoint, params):
+    """Wywołuje REST API Algrow (Bearer). Zwraca (data, error)."""
+    if not ALGROW_API_KEY:
+        return None, "Skonfiguruj ALGROW_API_KEY w zmiennych środowiskowych"
+    url = ALGROW_API_BASE.rstrip("/") + endpoint
+    try:
+        res = requests.post(
+            url,
+            json=params,
+            headers={"Authorization": f"Bearer {ALGROW_API_KEY}",
+                     "Content-Type": "application/json"},
+            timeout=ALGROW_TIMEOUT,
+        )
+        if res.status_code == 401:
+            return None, "Nieprawidłowy klucz ALGROW_API_KEY"
+        if res.status_code == 402:
+            return None, "Brak kredytów Algrow"
+        if res.status_code == 429:
+            return None, "Limit zapytań Algrow — spróbuj później"
+        if res.status_code >= 400:
+            return None, f"Algrow HTTP {res.status_code}: {res.text[:200]}"
+        print(f"💳 Algrow: {endpoint} OK ({len(res.text)} B)")
+        return res.json(), None
+    except Exception as e:
+        return None, f"Błąd połączenia z Algrow: {e}"
+
+
+def _algrow_video_to_card(item):
+    """Mapuje wynik Algrow na format karty (jak _parse_video_details)."""
+    vid = item.get("video_id") or item.get("id") or ""
+    ch_id = item.get("channel_id") or ""
+    return {
+        "id": vid,
+        "title": item.get("title") or "",
+        "channel": item.get("channel_title") or item.get("channel_name") or "",
+        "channel_id": ch_id,
+        "published": item.get("published_at") or item.get("uploaded_at") or "",
+        "url": item.get("url") or f"https://www.youtube.com/shorts/{vid}",
+        "thumbnail": item.get("thumbnail") or f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg",
+        "views": int(item.get("views") or item.get("view_count") or 0),
+        "likes": int(item.get("likes") or item.get("like_count") or 0),
+        "comment_count": int(item.get("comments") or item.get("comment_count") or 0),
+        "duration": item.get("duration") or "",
+        "duration_seconds": int(item.get("duration_seconds") or 0),
+        "description": (item.get("description") or "")[:500],
+        "tags": item.get("tags") or [],
+        "category_id": "",
+        "outlier_score": round(float(item.get("outlier_score") or 0), 1),
+        "channel_subs": int(item.get("subscriber_count") or item.get("channel_subs") or 0),
+    }
+
+
+@app.route('/api/algrow/videos', methods=['GET', 'POST'])
+def algrow_videos():
+    """GET = tylko cache (bez kredytów). POST = nowe wyszukiwanie (płatne)."""
+    now = time.time()
+
+    if request.method == 'GET':
+        cached = _cache.get("algrow_videos")
+        if cached and now - cached[0] < ALGROW_CACHE_TTL:
+            payload = dict(cached[1])
+            payload["cached"] = True
+            return jsonify(payload)
+        return jsonify({"videos": [], "cached": False, "empty": True,
+                        "configured": bool(ALGROW_API_KEY)})
+
+    body = request.get_json(silent=True) or {}
+    params = {
+        "content_type": "shorts",
+        "sort_by": "outlier_score",
+        "min_outlier_score": float(body.get("min_outlier_score") or ALGROW_MIN_OUTLIER),
+        "uploaded_within_days": int(body.get("uploaded_within_days") or ALGROW_UPLOADED_DAYS),
+        "min_video_views": int(body.get("min_video_views") or ALGROW_MIN_VIEWS),
+    }
+    if body.get("max_subs"):
+        params["max_subs"] = int(body["max_subs"])
+    if body.get("search"):
+        params["search"] = str(body["search"])[:200]
+
+    data, err = _algrow_call(ALGROW_EP_VIRAL_VIDEOS, params)
+    if err:
+        return jsonify({"videos": [], "error": err, "configured": bool(ALGROW_API_KEY)}), 200
+
+    raw_items = data.get("videos") or data.get("results") or data.get("items") or []
+    videos = [_algrow_video_to_card(i) for i in raw_items]
+    videos = [v for v in videos if v["id"]]
+
+    # Ocena commentary przez istniejący mechanizm Gemini (cache w ai_ratings)
+    ids = [v["id"] for v in videos]
+    try:
+        cached_ratings = db.get_ai_ratings(ids)
+    except Exception as e:
+        print(f"⚠️ DB ai_ratings read (algrow): {e}")
+        cached_ratings = {}
+    uncached = [v for v in videos if v["id"] not in cached_ratings]
+    new_ratings = {}
+    if uncached and GEMINI_API_KEY:
+        new_ratings = _rate_with_gemini(uncached)
+        try:
+            db.save_ai_ratings([{"video_id": vid, **r} for vid, r in new_ratings.items()])
+        except Exception as e:
+            print(f"⚠️ DB ai_ratings write (algrow): {e}")
+    all_ratings = {**cached_ratings, **new_ratings}
+
+    for v in videos:
+        r = all_ratings.get(v["id"])
+        v["ai_is_commentary"] = bool(r["is_commentary"]) if r else None
+        v["ai_confidence"] = r["confidence"] if r else None
+        v["ai_reason"] = r["reason"] if r else None
+
+    # Język + flaga kraju (fallback po języku — zero quota)
+    for v in videos:
+        _, lang = score_commentary(v["title"], v.get("description", ""),
+                                   v.get("duration_seconds", 0), False)
+        v["lang"] = lang
+        v["lang_flag"] = LANG_FLAGS.get(lang, "🌐")
+    _enrich_with_country(videos)
+
+    payload = {
+        "videos": videos,
+        "cached": False,
+        "gemini_new": len(new_ratings),
+        "gemini_cached": len(ids) - len(uncached),
+        "params": params,
+    }
+    _cache["algrow_videos"] = (now, payload)
+    print(f"🔎 Algrow videos: {len(videos)} wyników, Gemini nowych: {len(new_ratings)}")
+    return jsonify(payload)
+
+
+@app.route('/api/algrow/channels', methods=['GET', 'POST'])
+def algrow_channels():
+    """GET = tylko cache. POST = nowe wyszukiwanie kanałów (płatne)."""
+    now = time.time()
+
+    if request.method == 'GET':
+        cached = _cache.get("algrow_channels")
+        if cached and now - cached[0] < ALGROW_CACHE_TTL:
+            payload = dict(cached[1])
+            payload["cached"] = True
+            return jsonify(payload)
+        return jsonify({"channels": [], "cached": False, "empty": True,
+                        "configured": bool(ALGROW_API_KEY)})
+
+    body = request.get_json(silent=True) or {}
+    params = {
+        "max_subs": int(body.get("max_subs") or ALGROW_CH_MAX_SUBS),
+        "max_age": int(body.get("max_age") or ALGROW_CH_MAX_AGE),
+        "sort": body.get("sort") or "views_24h_desc",
+    }
+    if body.get("q"):
+        params["q"] = str(body["q"])[:200]
+    if body.get("min_views_24h"):
+        params["min_views_24h"] = int(body["min_views_24h"])
+    if body.get("languages"):
+        params["languages"] = body["languages"]
+
+    data, err = _algrow_call(ALGROW_EP_SHORTS_CHANNELS, params)
+    if err:
+        return jsonify({"channels": [], "error": err, "configured": bool(ALGROW_API_KEY)}), 200
+
+    raw = data.get("channels") or data.get("results") or data.get("items") or []
+    channels = []
+    for c in raw:
+        ch_id = c.get("channel_id") or c.get("id") or ""
+        channels.append({
+            "channel_id": ch_id,
+            "title": c.get("title") or c.get("name") or "",
+            "url": c.get("url") or (f"https://www.youtube.com/channel/{ch_id}" if ch_id else ""),
+            "thumbnail": c.get("thumbnail") or c.get("avatar") or "",
+            "subs": int(c.get("subscriber_count") or c.get("subs") or 0),
+            "views_24h": int(c.get("views_24h") or 0),
+            "age_days": int(c.get("age_days") or c.get("channel_age_days") or 0),
+            "language": c.get("language") or "",
+            "description": (c.get("description") or "")[:300],
+        })
+    channels = [c for c in channels if c["channel_id"]]
+
+    payload = {"channels": channels, "cached": False, "params": params}
+    _cache["algrow_channels"] = (now, payload)
+    print(f"🔎 Algrow channels: {len(channels)} wyników")
+    return jsonify(payload)
+
+
+@app.route('/api/algrow/known-channels')
+def algrow_known_channels():
+    """Zwraca channel_id już śledzone w bazie — do badge 'już śledzę'."""
+    try:
+        return jsonify({"ids": db.get_all_channels()})
+    except Exception as e:
+        return jsonify({"ids": [], "error": str(e)}), 500
 
 
 # ---------- Endpoint Hashtagi ----------

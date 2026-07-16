@@ -24,6 +24,7 @@
       <a href="/ai" data-cat="ai">🤖 AI</a>
       <a href="/saved" data-cat="saved">🔖 Zapisane</a>
       <a href="/hashtagi" data-cat="hashtagi">#️⃣ Hashtagi</a>
+      <a href="/algrow" data-cat="algrow">🔎 Algrow</a>
       <a href="/fun" data-cat="fun">Zagranica 2</a>
       <a href="/zwierzeta" data-cat="zwierzeta">Zwierzęta</a>
       <a href="/nauka" data-cat="nauka">Nauka</a>
@@ -307,6 +308,73 @@
     </div>
   </div>
 
+  <!-- WIDOK ALGROW -->
+  <div id="view-algrow" style="display:none">
+    <div class="algrow-note">💳 Algrow to płatne API (kredyty). Wyniki trzymane w cache 6h — nowe wyszukanie tylko po kliknięciu <b>Szukaj</b>.</div>
+
+    <!-- SEKCJA A: viralowe shorty -->
+    <h2 class="algrow-sec-title">🚀 Viralowe shorty (outliers)</h2>
+    <div class="controls">
+      <div class="group">
+        <label for="ag-search">Temat/nisza:</label>
+        <input type="text" id="ag-search" placeholder="(opcjonalnie)" maxlength="200" class="ag-input">
+      </div>
+      <div class="group">
+        <label for="ag-outlier">Min. outlier:</label>
+        <input type="number" id="ag-outlier" value="3.0" min="1" max="100" step="0.5" class="ag-input ag-num">
+      </div>
+      <div class="group">
+        <label for="ag-days">Dni:</label>
+        <input type="number" id="ag-days" value="7" min="1" max="90" class="ag-input ag-num">
+      </div>
+      <div class="group">
+        <label for="ag-minviews">Min. views:</label>
+        <input type="number" id="ag-minviews" value="10000" min="0" step="1000" class="ag-input ag-num">
+      </div>
+      <div class="group">
+        <label for="ag-maxsubs">Max subów:</label>
+        <input type="number" id="ag-maxsubs" placeholder="bez limitu" min="0" step="1000" class="ag-input ag-num">
+      </div>
+      <div class="group">
+        <label>
+          <input type="checkbox" id="ag-only-comm" style="accent-color:var(--accent);vertical-align:middle">
+          Tylko commentary
+        </label>
+      </div>
+      <button id="ag-video-search" class="ag-btn">🔎 Szukaj (płatne)</button>
+      <span class="count" id="ag-video-count"></span>
+    </div>
+    <div id="ag-videos">
+      <div class="state">Kliknij Szukaj albo poczekaj na wyniki z cache.</div>
+    </div>
+
+    <!-- SEKCJA B: nowe kanały -->
+    <h2 class="algrow-sec-title">🌱 Nowe/rosnące kanały</h2>
+    <div class="controls">
+      <div class="group">
+        <label for="agc-q">Fraza/nisza:</label>
+        <input type="text" id="agc-q" placeholder="(opcjonalnie — puste = browse)" maxlength="200" class="ag-input">
+      </div>
+      <div class="group">
+        <label for="agc-maxsubs">Max subów:</label>
+        <input type="number" id="agc-maxsubs" value="10000" min="0" step="1000" class="ag-input ag-num">
+      </div>
+      <div class="group">
+        <label for="agc-maxage">Max wiek (dni):</label>
+        <input type="number" id="agc-maxage" value="90" min="1" max="3650" class="ag-input ag-num">
+      </div>
+      <div class="group">
+        <label for="agc-minviews24">Min. views 24h:</label>
+        <input type="number" id="agc-minviews24" placeholder="0" min="0" step="1000" class="ag-input ag-num">
+      </div>
+      <button id="ag-channel-search" class="ag-btn">🔎 Szukaj (płatne)</button>
+      <span class="count" id="ag-channel-count"></span>
+    </div>
+    <div id="ag-channels">
+      <div class="state">Kliknij Szukaj albo poczekaj na wyniki z cache.</div>
+    </div>
+  </div>
+
   <!-- PANEL ZARZĄDZANIA -->
   <div id="view-manage" style="display:none">
     <div class="manage-wrap">
@@ -343,7 +411,7 @@
 
   <script>
     const path = window.location.pathname;
-    const valid = ["viral","hity","trendy","commentary","ai","saved","hashtagi","nauka","zwierzeta","fun","k1","k2","k3","k4","k5","k6","manage"];
+    const valid = ["viral","hity","trendy","commentary","ai","saved","hashtagi","algrow","nauka","zwierzeta","fun","k1","k2","k3","k4","k5","k6","manage"];
     let category = "main";
     valid.forEach(c => { if (path === "/" + c) category = c; });
 
@@ -1115,6 +1183,263 @@
       });
 
       loadHashtagi();
+    }
+
+    // ---------- TRYB: ALGROW ----------
+    else if (category === "algrow") {
+      document.getElementById('view-feed').style.display = 'none';
+      document.getElementById('view-algrow').style.display = 'block';
+
+      let knownChannels = new Set();
+      let agVideos = [];
+      let agChannels = [];
+
+      const CAT_OPTIONS = Object.entries(CAT_LABELS)
+        .map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
+
+      function fmt(n) {
+        if (n >= 1e6) return (n/1e6).toFixed(1) + 'M';
+        if (n >= 1e3) return (n/1e3).toFixed(0) + 'k';
+        return String(n);
+      }
+
+      // Przycisk "dodaj kanał" albo badge "już śledzę"
+      function addChannelControl(chId) {
+        if (!chId) return '';
+        if (knownChannels.has(chId)) {
+          return `<span class="ag-known">✓ już śledzę</span>`;
+        }
+        return `
+          <span class="ag-add-wrap" data-chid="${chId}">
+            <select class="ag-cat-sel">${CAT_OPTIONS}</select>
+            <button class="ag-add-btn">➕ Dodaj</button>
+          </span>`;
+      }
+
+      function wireAddButtons(container) {
+        container.querySelectorAll('.ag-add-wrap').forEach(wrap => {
+          const btn = wrap.querySelector('.ag-add-btn');
+          btn.addEventListener('click', async () => {
+            const chId = wrap.dataset.chid;
+            const cat = wrap.querySelector('.ag-cat-sel').value;
+            btn.disabled = true;
+            btn.textContent = '…';
+            try {
+              const r = await fetch('/api/channels', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({category: cat, link: chId}),
+              });
+              const data = await r.json();
+              if (data.ok) {
+                knownChannels.add(chId);
+                wrap.outerHTML = '<span class="ag-known">✓ już śledzę</span>';
+              } else {
+                btn.textContent = '❌ ' + (data.error || 'błąd');
+                btn.disabled = false;
+              }
+            } catch(e) {
+              btn.textContent = '❌ błąd';
+              btn.disabled = false;
+            }
+          });
+        });
+      }
+
+      function agVideoCardHTML(v) {
+        const outlier = v.outlier_score ? `<span class="badge-extra" title="wyświetlenia ÷ norma kanału">🚀 ${v.outlier_score}× normy</span>` : '';
+        const conf = v.ai_confidence != null ? v.ai_confidence : null;
+        const confColor = conf == null ? '#94a3b8' : conf >= 90 ? '#22c55e' : conf >= 70 ? '#f59e0b' : '#94a3b8';
+        const confBadge = conf != null
+          ? `<span class="badge-score" style="background:${confColor}">🤖 ${conf}%</span>` : '';
+        const reasonEl = v.ai_reason
+          ? `<div class="card-ai-reason" title="${v.ai_reason.replace(/"/g,'&quot;')}">💬 ${v.ai_reason.slice(0,100).replace(/</g,'&lt;')}${v.ai_reason.length>100?'…':''}</div>` : '';
+        const langBadge = v.lang && v.lang !== '?' ? `<span class="badge-lang">${v.lang_flag||''} ${v.lang}</span>` : '';
+        const countryBadge = v.country_flag ? `<span class="badge-lang">${v.country_flag} ${v.country_guessed?'≈':''}${v.country}</span>` : '';
+        const subsStr = v.channel_subs ? `<span title="subskrypcje kanału">👥 <b>${fmt(v.channel_subs)}</b></span>` : '';
+        const date = v.published ? new Date(v.published).toLocaleDateString('pl-PL') : '';
+        const isSaved = savedIds.has(v.id);
+        const saveBtn = `<button class="btn-save${isSaved?' save-active':''}" data-vid="${v.id}" title="${isSaved?'Usuń z zapisanych':'Zapisz'}">🔖</button>`;
+        return `
+          <a class="title-link" href="${v.url}" target="_blank" rel="noopener">
+            <div class="thumb-wrap">
+              <img src="${v.thumbnail}" alt="" loading="lazy" />
+              ${outlier}
+              ${confBadge}
+              ${v.duration ? `<span class="badge-dur">${v.duration}</span>` : ''}
+            </div>
+          </a>
+          <div class="body">
+            <div class="card-title-row">
+              <a class="title-link" href="${v.url}" target="_blank" rel="noopener"><h3>${v.title}</h3></a>
+              ${saveBtn}
+            </div>
+            <div class="channel">${v.channel || 'Nieznany kanał'} ${countryBadge} ${langBadge}</div>
+            ${reasonEl}
+            <div class="stats">
+              <span>👁 <b>${fmt(v.views)}</b></span>
+              ${subsStr}
+            </div>
+            <div class="ag-actions">${addChannelControl(v.channel_id)}</div>
+            <div class="date">${date}</div>
+          </div>`;
+      }
+
+      function renderAgVideos() {
+        const onlyComm = document.getElementById('ag-only-comm').checked;
+        let list = agVideos.slice();
+        if (onlyComm) list = list.filter(v => v.ai_is_commentary === true);
+        const container = document.getElementById('ag-videos');
+        document.getElementById('ag-video-count').textContent =
+          list.length + (list.length === 1 ? ' short' : ' shortów');
+        if (!list.length) {
+          container.innerHTML = '<div class="state">Brak wyników.</div>';
+          return;
+        }
+        container.innerHTML = '';
+        list.forEach((v, i) => {
+          const div = document.createElement('div');
+          div.className = 'video';
+          div.style.animationDelay = Math.min(i*25, 400) + 'ms';
+          div.innerHTML = agVideoCardHTML(v);
+          div.querySelector('.btn-save')?.addEventListener('click', e => {
+            e.preventDefault();
+            toggleSave(v, e.currentTarget);
+          });
+          container.appendChild(div);
+        });
+        wireAddButtons(container);
+      }
+
+      function agChannelCardHTML(c) {
+        const thumb = c.thumbnail ? `<img src="${c.thumbnail}" alt="" loading="lazy" class="ag-ch-avatar">` : '<div class="ag-ch-avatar ag-ch-noavatar">▶</div>';
+        return `
+          <div class="ag-ch-head">
+            ${thumb}
+            <div class="ag-ch-info">
+              <a href="${c.url}" target="_blank" rel="noopener" class="ag-ch-title">${c.title || '(bez nazwy)'}</a>
+              <div class="ag-ch-stats">
+                👥 ${fmt(c.subs)} subów
+                ${c.views_24h ? ` • ⚡ ${fmt(c.views_24h)}/24h` : ''}
+                ${c.age_days ? ` • 📅 ${c.age_days} dni` : ''}
+                ${c.language ? ` • ${c.language}` : ''}
+              </div>
+            </div>
+          </div>
+          ${c.description ? `<div class="card-desc">${c.description.replace(/</g,'&lt;')}</div>` : ''}
+          <div class="ag-actions">${addChannelControl(c.channel_id)}</div>`;
+      }
+
+      function renderAgChannels() {
+        const container = document.getElementById('ag-channels');
+        document.getElementById('ag-channel-count').textContent =
+          agChannels.length + (agChannels.length === 1 ? ' kanał' : ' kanałów');
+        if (!agChannels.length) {
+          container.innerHTML = '<div class="state">Brak wyników.</div>';
+          return;
+        }
+        container.innerHTML = '';
+        agChannels.forEach((c, i) => {
+          const div = document.createElement('div');
+          div.className = 'video ag-ch-card';
+          div.style.animationDelay = Math.min(i*25, 400) + 'ms';
+          div.innerHTML = agChannelCardHTML(c);
+          container.appendChild(div);
+        });
+        wireAddButtons(container);
+      }
+
+      function showError(containerId, err, configured) {
+        const msg = configured === false
+          ? '⚙️ Skonfiguruj ALGROW_API_KEY w zmiennych środowiskowych (Render → Environment).'
+          : '❌ ' + (err || 'Błąd');
+        document.getElementById(containerId).innerHTML = `<div class="state">${msg}</div>`;
+      }
+
+      // --- Sekcja A: szukaj viralowych shortów (POST = płatne) ---
+      document.getElementById('ag-video-search').addEventListener('click', async function() {
+        this.disabled = true;
+        document.getElementById('ag-videos').innerHTML =
+          '<div class="state"><div class="spinner"></div>Szukam w Algrow + oceniam przez Gemini…</div>';
+        try {
+          const body = {
+            min_outlier_score: parseFloat(document.getElementById('ag-outlier').value) || 3.0,
+            uploaded_within_days: parseInt(document.getElementById('ag-days').value) || 7,
+            min_video_views: parseInt(document.getElementById('ag-minviews').value) || 10000,
+          };
+          const maxSubs = parseInt(document.getElementById('ag-maxsubs').value);
+          if (maxSubs > 0) body.max_subs = maxSubs;
+          const q = document.getElementById('ag-search').value.trim();
+          if (q) body.search = q;
+          const r = await fetch('/api/algrow/videos', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body),
+          });
+          const data = await r.json();
+          if (data.error) { showError('ag-videos', data.error, data.configured); return; }
+          agVideos = data.videos || [];
+          renderAgVideos();
+        } catch(e) {
+          showError('ag-videos', String(e));
+        } finally {
+          this.disabled = false;
+        }
+      });
+
+      // --- Sekcja B: szukaj kanałów (POST = płatne) ---
+      document.getElementById('ag-channel-search').addEventListener('click', async function() {
+        this.disabled = true;
+        document.getElementById('ag-channels').innerHTML =
+          '<div class="state"><div class="spinner"></div>Szukam kanałów w Algrow…</div>';
+        try {
+          const body = {
+            max_subs: parseInt(document.getElementById('agc-maxsubs').value) || 10000,
+            max_age: parseInt(document.getElementById('agc-maxage').value) || 90,
+          };
+          const mv = parseInt(document.getElementById('agc-minviews24').value);
+          if (mv > 0) body.min_views_24h = mv;
+          const q = document.getElementById('agc-q').value.trim();
+          if (q) body.q = q;
+          const r = await fetch('/api/algrow/channels', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body),
+          });
+          const data = await r.json();
+          if (data.error) { showError('ag-channels', data.error, data.configured); return; }
+          agChannels = data.channels || [];
+          renderAgChannels();
+        } catch(e) {
+          showError('ag-channels', String(e));
+        } finally {
+          this.disabled = false;
+        }
+      });
+
+      document.getElementById('ag-only-comm').addEventListener('change', renderAgVideos);
+
+      // Start: znane kanały + wyniki z cache (GET = darmowe, bez kredytów)
+      Promise.all([
+        fetch('/api/algrow/known-channels').then(r => r.json()).catch(() => ({ids: []})),
+        fetch('/api/algrow/videos').then(r => r.json()).catch(() => ({videos: []})),
+        fetch('/api/algrow/channels').then(r => r.json()).catch(() => ({channels: []})),
+        loadSavedIds(),
+      ]).then(([known, vids, chans]) => {
+        knownChannels = new Set(known.ids || []);
+        if (vids.videos && vids.videos.length) {
+          agVideos = vids.videos;
+          renderAgVideos();
+        } else if (vids.configured === false) {
+          showError('ag-videos', null, false);
+        }
+        if (chans.channels && chans.channels.length) {
+          agChannels = chans.channels;
+          renderAgChannels();
+        } else if (chans.configured === false) {
+          showError('ag-channels', null, false);
+        }
+      });
     }
 
     // ---------- TRYB: HITY ----------
