@@ -25,6 +25,7 @@
       <a href="/saved" data-cat="saved">🔖 Zapisane</a>
       <a href="/hashtagi" data-cat="hashtagi">#️⃣ Hashtagi</a>
       <a href="/algrow" data-cat="algrow">🔎 Algrow</a>
+      <a href="/odkrywaj" data-cat="odkrywaj">🌐 Odkrywaj</a>
       <a href="/fun" data-cat="fun">Zagranica 2</a>
       <a href="/zwierzeta" data-cat="zwierzeta">Zwierzęta</a>
       <a href="/nauka" data-cat="nauka">Nauka</a>
@@ -375,6 +376,73 @@
     </div>
   </div>
 
+  <!-- WIDOK ODKRYWAJ -->
+  <div id="view-odkrywaj" style="display:none">
+    <div class="algrow-note">🌐 Szukanie viralowych shortów poza Twoją bazą i poza trendami — przez Algrow. Wyniki w cache 6h, wyszukiwanie tylko po kliknięciu <b>Szukaj</b>. Wyniki oceniane przez Gemini (commentary).</div>
+
+    <div class="controls">
+      <div class="group">
+        <label>Tryb:</label>
+        <div class="seg" id="od-mode">
+          <button data-m="viral" class="active" title="Baza Algrow z metryką outlier_score">🚀 Virale</button>
+          <button data-m="yt" title="Cała wyszukiwarka YouTube — bez outlier_score">🌐 Cały YouTube</button>
+        </div>
+      </div>
+      <div class="group">
+        <label for="od-lang">Język fraz:</label>
+        <select id="od-lang"></select>
+      </div>
+      <div class="group">
+        <label for="od-cat">Kategoria:</label>
+        <select id="od-cat">
+          <option value="ciekawostki">💡 Ciekawostki</option>
+          <option value="gadzety">🔧 Gadżety/hacki</option>
+          <option value="reakcje">😱 Reakcje</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Frazy do wyboru (multi-select) -->
+    <div class="od-phrases-wrap">
+      <div id="od-phrases"></div>
+      <div class="od-custom-row">
+        <input type="text" id="od-custom" placeholder="…albo wpisz własną frazę i Enter" maxlength="200" class="ag-input">
+      </div>
+    </div>
+
+    <div class="controls">
+      <div class="group">
+        <label>Okres:</label>
+        <div class="seg" id="od-days">
+          <button data-d="1">24h</button>
+          <button data-d="3">3 dni</button>
+          <button data-d="7" class="active">7 dni</button>
+          <button data-d="30">30 dni</button>
+        </div>
+      </div>
+      <div class="group od-viral-only">
+        <label for="od-outlier">Min. outlier:</label>
+        <input type="number" id="od-outlier" value="3.0" min="1" max="100" step="0.5" class="ag-input ag-num">
+      </div>
+      <div class="group od-viral-only">
+        <label for="od-maxsubs">Max subów:</label>
+        <input type="number" id="od-maxsubs" value="50000" min="0" step="5000" class="ag-input ag-num">
+      </div>
+      <div class="group">
+        <label>
+          <input type="checkbox" id="od-only-comm" style="accent-color:var(--accent);vertical-align:middle">
+          Tylko commentary
+        </label>
+      </div>
+      <button id="od-search" class="ag-btn">🔎 Szukaj</button>
+      <span class="count" id="od-count"></span>
+    </div>
+
+    <div id="od-videos">
+      <div class="state">Wybierz frazy i kliknij Szukaj — albo poczekaj na wyniki z cache.</div>
+    </div>
+  </div>
+
   <!-- PANEL ZARZĄDZANIA -->
   <div id="view-manage" style="display:none">
     <div class="manage-wrap">
@@ -411,7 +479,7 @@
 
   <script>
     const path = window.location.pathname;
-    const valid = ["viral","hity","trendy","commentary","ai","saved","hashtagi","algrow","nauka","zwierzeta","fun","k1","k2","k3","k4","k5","k6","manage"];
+    const valid = ["viral","hity","trendy","commentary","ai","saved","hashtagi","algrow","odkrywaj","nauka","zwierzeta","fun","k1","k2","k3","k4","k5","k6","manage"];
     let category = "main";
     valid.forEach(c => { if (path === "/" + c) category = c; });
 
@@ -1440,6 +1508,275 @@
           renderAgChannels();
         } else if (chans.configured === false) {
           showError('ag-channels', null, false);
+        }
+      });
+    }
+
+    // ---------- TRYB: ODKRYWAJ ----------
+    else if (category === "odkrywaj") {
+      document.getElementById('view-feed').style.display = 'none';
+      document.getElementById('view-odkrywaj').style.display = 'block';
+
+      let knownChannels = new Set();
+      let odVideos = [];
+      let odMode = 'viral';
+      let odDays = 7;
+      let KW = {keywords: {}, categories: [], lang_names: {}};
+      let selectedPhrases = new Set();
+
+      const langSel = document.getElementById('od-lang');
+      const catSel = document.getElementById('od-cat');
+      const phrasesBox = document.getElementById('od-phrases');
+      const customInp = document.getElementById('od-custom');
+      const searchBtn = document.getElementById('od-search');
+      const modeBox = document.getElementById('od-mode');
+      const daysBox = document.getElementById('od-days');
+
+      const CAT_OPTIONS = Object.entries(CAT_LABELS)
+        .map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
+
+      function fmt(n) {
+        if (n >= 1e6) return (n/1e6).toFixed(1) + 'M';
+        if (n >= 1e3) return (n/1e3).toFixed(0) + 'k';
+        return String(n);
+      }
+
+      function updateSearchBtn() {
+        const n = selectedPhrases.size;
+        searchBtn.textContent = n > 0 ? `🔎 Szukaj (${n} ${n === 1 ? 'zapytanie' : n < 5 ? 'zapytania' : 'zapytań'})` : '🔎 Szukaj';
+      }
+
+      // Chipy fraz dla wybranego języka i kategorii + zaznaczone własne
+      function renderPhrases() {
+        const lang = langSel.value;
+        const cat = catSel.value;
+        const suggested = (KW.keywords[lang] || {})[cat] || [];
+        const all = [...new Set([...suggested, ...selectedPhrases])];
+        phrasesBox.innerHTML = all.map(p => {
+          const sel = selectedPhrases.has(p) ? ' od-phrase-sel' : '';
+          return `<button class="od-phrase${sel}" data-p="${p.replace(/"/g,'&quot;')}">${p}</button>`;
+        }).join('');
+        phrasesBox.querySelectorAll('.od-phrase').forEach(b => {
+          b.addEventListener('click', () => {
+            const p = b.dataset.p;
+            if (selectedPhrases.has(p)) selectedPhrases.delete(p);
+            else if (selectedPhrases.size < 5) selectedPhrases.add(p);
+            renderPhrases();
+            updateSearchBtn();
+          });
+        });
+      }
+
+      customInp.addEventListener('keydown', e => {
+        if (e.key === 'Enter') {
+          const p = customInp.value.trim();
+          if (p && selectedPhrases.size < 5) {
+            selectedPhrases.add(p);
+            customInp.value = '';
+            renderPhrases();
+            updateSearchBtn();
+          }
+        }
+      });
+
+      modeBox.querySelectorAll('button').forEach(b => {
+        b.addEventListener('click', () => {
+          odMode = b.dataset.m;
+          modeBox.querySelectorAll('button').forEach(x => x.classList.remove('active'));
+          b.classList.add('active');
+          // Filtry outlier/max_subs tylko w trybie viral
+          document.querySelectorAll('.od-viral-only').forEach(el => {
+            el.style.display = odMode === 'viral' ? '' : 'none';
+          });
+        });
+      });
+
+      daysBox.querySelectorAll('button').forEach(b => {
+        b.addEventListener('click', () => {
+          odDays = Number(b.dataset.d);
+          daysBox.querySelectorAll('button').forEach(x => x.classList.remove('active'));
+          b.classList.add('active');
+        });
+      });
+
+      function addChannelControl(chId) {
+        if (!chId) return '';
+        if (knownChannels.has(chId)) return `<span class="ag-known">✓ już śledzę</span>`;
+        return `
+          <span class="ag-add-wrap" data-chid="${chId}">
+            <select class="ag-cat-sel">${CAT_OPTIONS}</select>
+            <button class="ag-add-btn">➕ Dodaj</button>
+          </span>`;
+      }
+
+      function wireAddButtons(container) {
+        container.querySelectorAll('.ag-add-wrap').forEach(wrap => {
+          const btn = wrap.querySelector('.ag-add-btn');
+          btn.addEventListener('click', async () => {
+            const chId = wrap.dataset.chid;
+            const cat = wrap.querySelector('.ag-cat-sel').value;
+            btn.disabled = true;
+            btn.textContent = '…';
+            try {
+              const r = await fetch('/api/channels', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({category: cat, link: chId}),
+              });
+              const data = await r.json();
+              if (data.ok) {
+                knownChannels.add(chId);
+                wrap.outerHTML = '<span class="ag-known">✓ już śledzę</span>';
+              } else {
+                btn.textContent = '❌ ' + (data.error || 'błąd');
+                btn.disabled = false;
+              }
+            } catch(e) {
+              btn.textContent = '❌ błąd';
+              btn.disabled = false;
+            }
+          });
+        });
+      }
+
+      function odCardHTML(v) {
+        const outlier = v.outlier_score ? `<span class="badge-extra" title="wyświetlenia ÷ norma kanału">🚀 ${v.outlier_score}× normy</span>` : '';
+        const conf = v.ai_confidence != null ? v.ai_confidence : null;
+        const confColor = conf == null ? '#94a3b8' : conf >= 90 ? '#22c55e' : conf >= 70 ? '#f59e0b' : '#94a3b8';
+        const confBadge = conf != null
+          ? `<span class="badge-score" style="background:${confColor}">🤖 ${conf}%</span>` : '';
+        const reasonEl = v.ai_reason
+          ? `<div class="card-ai-reason" title="${v.ai_reason.replace(/"/g,'&quot;')}">💬 ${v.ai_reason.slice(0,100).replace(/</g,'&lt;')}${v.ai_reason.length>100?'…':''}</div>` : '';
+        const langBadge = v.lang && v.lang !== '?' ? `<span class="badge-lang">${v.lang_flag||''} ${v.lang}</span>` : '';
+        const countryBadge = v.country_flag ? `<span class="badge-lang">${v.country_flag} ${v.country_guessed?'≈':''}${v.country}</span>` : '';
+        const subsStr = v.channel_subs ? `<span title="subskrypcje kanału">👥 <b>${fmt(v.channel_subs)}</b></span>` : '';
+        const phraseBadge = v.phrase ? `<span class="badge-lang" title="fraza wyszukiwania">🔎 ${v.phrase}</span>` : '';
+        const date = v.published ? new Date(v.published).toLocaleDateString('pl-PL') : (v.published_text || '');
+        const isSaved = savedIds.has(v.id);
+        const saveBtn = `<button class="btn-save${isSaved?' save-active':''}" data-vid="${v.id}" title="${isSaved?'Usuń z zapisanych':'Zapisz'}">🔖</button>`;
+        return `
+          <a class="title-link" href="${v.url}" target="_blank" rel="noopener">
+            <div class="thumb-wrap">
+              <img src="${v.thumbnail}" alt="" loading="lazy" />
+              ${outlier}
+              ${confBadge}
+              ${v.duration ? `<span class="badge-dur">${v.duration}</span>` : ''}
+            </div>
+          </a>
+          <div class="body">
+            <div class="card-title-row">
+              <a class="title-link" href="${v.url}" target="_blank" rel="noopener"><h3>${v.title}</h3></a>
+              ${saveBtn}
+            </div>
+            <div class="channel">${v.channel || 'Nieznany kanał'} ${countryBadge} ${langBadge}</div>
+            ${reasonEl}
+            <div class="stats">
+              <span>👁 <b>${fmt(v.views)}</b></span>
+              ${subsStr}
+            </div>
+            <div class="ag-actions">${addChannelControl(v.channel_id)}</div>
+            <div class="date">${date} ${phraseBadge}</div>
+          </div>`;
+      }
+
+      function renderOd() {
+        const onlyComm = document.getElementById('od-only-comm').checked;
+        let list = odVideos.slice();
+        if (onlyComm) list = list.filter(v => v.ai_is_commentary === true);
+        const container = document.getElementById('od-videos');
+        document.getElementById('od-count').textContent =
+          list.length + (list.length === 1 ? ' short' : ' shortów');
+        if (!list.length) {
+          container.innerHTML = '<div class="state">Brak wyników.</div>';
+          return;
+        }
+        container.innerHTML = '';
+        list.forEach((v, i) => {
+          const div = document.createElement('div');
+          div.className = 'video';
+          div.style.animationDelay = Math.min(i*25, 400) + 'ms';
+          div.innerHTML = odCardHTML(v);
+          div.querySelector('.btn-save')?.addEventListener('click', e => {
+            e.preventDefault();
+            toggleSave(v, e.currentTarget);
+          });
+          container.appendChild(div);
+        });
+        wireAddButtons(container);
+      }
+
+      searchBtn.addEventListener('click', async function() {
+        if (!selectedPhrases.size) {
+          document.getElementById('od-videos').innerHTML = '<div class="state">Zaznacz przynajmniej jedną frazę.</div>';
+          return;
+        }
+        this.disabled = true;
+        document.getElementById('od-videos').innerHTML =
+          '<div class="state"><div class="spinner"></div>Szukam przez Algrow + oceniam przez Gemini…</div>';
+        try {
+          const body = {
+            mode: odMode,
+            phrases: [...selectedPhrases],
+            days: odDays,
+          };
+          if (odMode === 'viral') {
+            body.min_outlier = parseFloat(document.getElementById('od-outlier').value) || 3.0;
+            body.max_subs = parseInt(document.getElementById('od-maxsubs').value) || 50000;
+          }
+          const r = await fetch('/api/odkrywaj', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body),
+          });
+          const data = await r.json();
+          if (data.error && !(data.videos || []).length) {
+            const msg = data.configured === false
+              ? '⚙️ Skonfiguruj ALGROW_API_KEY w zmiennych środowiskowych.'
+              : '❌ ' + data.error;
+            document.getElementById('od-videos').innerHTML = `<div class="state">${msg}</div>`;
+            return;
+          }
+          odVideos = data.videos || [];
+          if (data.errors && data.errors.length) {
+            console.warn('Odkrywaj częściowe błędy:', data.errors);
+          }
+          renderOd();
+        } catch(e) {
+          document.getElementById('od-videos').innerHTML = '<div class="state">❌ ' + e + '</div>';
+        } finally {
+          this.disabled = false;
+          updateSearchBtn();
+        }
+      });
+
+      document.getElementById('od-only-comm').addEventListener('change', renderOd);
+      langSel.addEventListener('change', renderPhrases);
+      catSel.addEventListener('change', renderPhrases);
+
+      // Start: słownik fraz + znane kanały + cache (zero zapytań Algrow)
+      Promise.all([
+        fetch('/api/odkrywaj/keywords').then(r => r.json()),
+        fetch('/api/algrow/known-channels').then(r => r.json()).catch(() => ({ids: []})),
+        fetch('/api/odkrywaj').then(r => r.json()).catch(() => ({videos: []})),
+        loadSavedIds(),
+      ]).then(([kw, known, cached]) => {
+        KW = kw;
+        knownChannels = new Set(known.ids || []);
+        // Dropdown języków
+        Object.entries(kw.lang_names || {}).forEach(([code, name]) => {
+          const opt = document.createElement('option');
+          opt.value = code;
+          opt.textContent = name;
+          if (code === 'en') opt.selected = true;
+          langSel.appendChild(opt);
+        });
+        renderPhrases();
+        if (cached.videos && cached.videos.length) {
+          odVideos = cached.videos;
+          renderOd();
+        } else if (cached.configured === false) {
+          document.getElementById('od-videos').innerHTML =
+            '<div class="state">⚙️ Skonfiguruj ALGROW_API_KEY w zmiennych środowiskowych.</div>';
         }
       });
     }

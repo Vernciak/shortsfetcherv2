@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 import isodate
 import db
 from commentary_patterns import score_commentary, LANG_FLAGS
+from discovery_keywords import DISCOVERY_KEYWORDS, KEYWORD_CATEGORIES, KEYWORD_LANG_NAMES
 
 load_dotenv()
 
@@ -121,6 +122,7 @@ except Exception as e:
 @app.route('/saved')
 @app.route('/hashtagi')
 @app.route('/algrow')
+@app.route('/odkrywaj')
 @app.route('/manage')
 def index():
     return send_from_directory('frontend', 'index.html')
@@ -1076,6 +1078,15 @@ ALGROW_CH_MAX_AGE = 90          # sekcja B: kanały młodsze niż 90 dni
 ALGROW_TIMEOUT = 60      # pierwsze zapytanie bywa wolne
 ALGROW_RETRIES = 2       # ponowienia przy timeout
 
+# ---------- Parametry podstrony Odkrywaj ----------
+ALGROW_EP_SEARCH = "/api/search"          # cały YouTube (sync, bez outlier_score)
+ODKRYWAJ_CACHE_TTL = 21600                # 6h — cache per (tryb, fraza, filtry)
+ODKRYWAJ_MAX_PHRASES = 5                  # max fraz na jedno wyszukanie multi
+ODKRYWAJ_DAYS = 7                         # domyślny okres (dni)
+ODKRYWAJ_MIN_OUTLIER = 3.0                # tryb B: min outlier_score
+ODKRYWAJ_MAX_SUBS = 50000                 # tryb B: łapanie małych kanałów
+ODKRYWAJ_MAX_DUR = 180                    # tryb A: tylko shorty (sekundy)
+
 # ---------- Parametry endpointu Hashtagi ----------
 # Tagi generyczne — dominują, zaśmiecają; edytowalna lista
 HASHTAGI_GENERYCZNE = frozenset({
@@ -1373,6 +1384,193 @@ def algrow_known_channels():
         return jsonify({"ids": db.get_all_channels()})
     except Exception as e:
         return jsonify({"ids": [], "error": str(e)}), 500
+
+
+def _gemini_annotate(videos):
+    """Ocenia filmy Gemini z cache w ai_ratings (reużycie mechanizmu z /ai).
+
+    Dodaje ai_is_commentary / ai_confidence / ai_reason do każdego filmu.
+    Zwraca (n_new, n_cached).
+    """
+    ids = [v["id"] for v in videos]
+    try:
+        cached_ratings = db.get_ai_ratings(ids)
+    except Exception as e:
+        print(f"⚠️ DB ai_ratings read: {e}")
+        cached_ratings = {}
+    uncached = [v for v in videos if v["id"] not in cached_ratings]
+    new_ratings = {}
+    if uncached and GEMINI_API_KEY:
+        new_ratings = _rate_with_gemini(uncached)
+        try:
+            db.save_ai_ratings([{"video_id": vid, **r} for vid, r in new_ratings.items()])
+        except Exception as e:
+            print(f"⚠️ DB ai_ratings write: {e}")
+    all_ratings = {**cached_ratings, **new_ratings}
+    for v in videos:
+        r = all_ratings.get(v["id"])
+        v["ai_is_commentary"] = bool(r["is_commentary"]) if r else None
+        v["ai_confidence"] = r["confidence"] if r else None
+        v["ai_reason"] = r["reason"] if r else None
+    return len(new_ratings), len(ids) - len(uncached)
+
+
+# ---------- Endpointy Odkrywaj (Algrow: cały YouTube + virale) ----------
+
+@app.route('/api/odkrywaj/keywords')
+def odkrywaj_keywords():
+    """Słownik fraz-hooków per język/kategoria dla UI."""
+    return jsonify({
+        "keywords": DISCOVERY_KEYWORDS,
+        "categories": KEYWORD_CATEGORIES,
+        "lang_names": KEYWORD_LANG_NAMES,
+    })
+
+
+def _odkrywaj_search_yt(phrase, days):
+    """Tryb A: GET /api/search — cały YouTube, filtrowanie do shortów po stronie serwera."""
+    params = {
+        "q": phrase,
+        "type": "video",
+        "sort_by": "view_count",
+        "published_within_days": days,
+        "duration": "short",
+        "limit": 50,
+    }
+    data, err = _algrow_call(ALGROW_EP_SEARCH, params)
+    if err:
+        return None, err
+    videos = []
+    for item in data.get("results") or []:
+        if item.get("type") != "video":
+            continue
+        dur_s = int(item.get("duration_seconds") or 0)
+        if dur_s == 0 or dur_s > ODKRYWAJ_MAX_DUR:
+            continue
+        vid = item.get("video_id") or ""
+        mm, ss = dur_s // 60, dur_s % 60
+        videos.append({
+            "id": vid,
+            "title": item.get("title") or "",
+            "channel": item.get("channel_name") or "",
+            "channel_id": item.get("channel_id") or "",
+            "published": "",
+            "published_text": item.get("published_text") or "",
+            "url": f"https://www.youtube.com/shorts/{vid}",
+            "thumbnail": item.get("thumbnail_url") or f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg",
+            "views": int(item.get("view_count") or 0),
+            "likes": 0,
+            "comment_count": 0,
+            "duration": f"{mm}:{str(ss).zfill(2)}",
+            "duration_seconds": dur_s,
+            "description": (item.get("description_snippet") or "")[:500],
+            "tags": [],
+            "category_id": "",
+            "outlier_score": None,
+            "channel_subs": 0,
+            "phrase": phrase,
+        })
+    return videos, None
+
+
+def _odkrywaj_search_viral(phrase, days, min_outlier, max_subs):
+    """Tryb B: GET /api/viral-videos/search — virale z outlier_score."""
+    params = {
+        "q": phrase,
+        "content_type": "shorts",
+        "sort_by": "outlier_score",
+        "min_outlier_score": min_outlier,
+        "max_upload_date": days,
+        "max_subs": max_subs,
+        "per_page": 50,
+    }
+    data, err = _algrow_call(ALGROW_EP_VIRAL_VIDEOS, params)
+    if err:
+        return None, err
+    videos = [_algrow_video_to_card(i) for i in (data.get("videos") or [])]
+    for v in videos:
+        v["phrase"] = phrase
+    return [v for v in videos if v["id"]], None
+
+
+@app.route('/api/odkrywaj', methods=['GET', 'POST'])
+def odkrywaj_search():
+    """GET = ostatni wynik z cache (zero zapytań Algrow). POST = nowe wyszukiwanie."""
+    now = time.time()
+
+    if request.method == 'GET':
+        cached = _cache.get("odkrywaj_last")
+        if cached and now - cached[0] < ODKRYWAJ_CACHE_TTL:
+            payload = dict(cached[1])
+            payload["cached"] = True
+            return jsonify(payload)
+        return jsonify({"videos": [], "cached": False, "empty": True,
+                        "configured": bool(ALGROW_API_KEY)})
+
+    body = request.get_json(silent=True) or {}
+    mode = body.get("mode") if body.get("mode") in ("yt", "viral") else "viral"
+    phrases = [str(p).strip()[:200] for p in (body.get("phrases") or []) if str(p).strip()]
+    phrases = phrases[:ODKRYWAJ_MAX_PHRASES]
+    if not phrases:
+        return jsonify({"videos": [], "error": "Podaj przynajmniej jedną frazę"}), 200
+
+    days = int(body.get("days") or ODKRYWAJ_DAYS)
+    min_outlier = float(body.get("min_outlier") or ODKRYWAJ_MIN_OUTLIER)
+    max_subs = int(body.get("max_subs") or ODKRYWAJ_MAX_SUBS)
+
+    # Sekwencyjnie (limit zapytań/h i brak równoległych jobów), z cache per fraza+filtry
+    merged, seen, errors, api_calls = [], set(), [], 0
+    for phrase in phrases:
+        cache_key = f"odkrywaj_{mode}_{phrase}_{days}_{min_outlier}_{max_subs}"
+        cached = _cache.get(cache_key)
+        if cached and now - cached[0] < ODKRYWAJ_CACHE_TTL:
+            videos = cached[1]
+        else:
+            if mode == "yt":
+                videos, err = _odkrywaj_search_yt(phrase, days)
+            else:
+                videos, err = _odkrywaj_search_viral(phrase, days, min_outlier, max_subs)
+            api_calls += 1
+            if err:
+                errors.append(f"„{phrase}”: {err}")
+                continue
+            _cache[cache_key] = (now, videos)
+        for v in videos:
+            if v["id"] not in seen:
+                seen.add(v["id"])
+                merged.append(v)
+
+    if not merged and errors:
+        return jsonify({"videos": [], "error": " | ".join(errors),
+                        "configured": bool(ALGROW_API_KEY)}), 200
+
+    # Ocena commentary przez istniejący mechanizm Gemini (cache w ai_ratings)
+    n_new, n_cached = _gemini_annotate(merged)
+
+    # Język + flaga kraju (fallback po języku)
+    for v in merged:
+        _, lang = score_commentary(v["title"], v.get("description", ""),
+                                   v.get("duration_seconds", 0), False)
+        v["lang"] = lang
+        v["lang_flag"] = LANG_FLAGS.get(lang, "🌐")
+    _enrich_with_country(merged)
+
+    merged.sort(key=lambda v: (v.get("outlier_score") or 0, v["views"]), reverse=True)
+
+    payload = {
+        "videos": merged,
+        "cached": False,
+        "mode": mode,
+        "phrases": phrases,
+        "api_calls": api_calls,
+        "gemini_new": n_new,
+        "gemini_cached": n_cached,
+        "errors": errors,
+    }
+    _cache["odkrywaj_last"] = (now, payload)
+    print(f"🌐 Odkrywaj [{mode}]: {len(merged)} wyników z {len(phrases)} fraz "
+          f"({api_calls} zapytań Algrow, Gemini nowych: {n_new})")
+    return jsonify(payload)
 
 
 # ---------- Endpoint Hashtagi ----------
