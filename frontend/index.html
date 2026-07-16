@@ -310,7 +310,7 @@
 
   <!-- WIDOK ALGROW -->
   <div id="view-algrow" style="display:none">
-    <div class="algrow-note">💳 Algrow to płatne API (kredyty). Wyniki trzymane w cache 6h — nowe wyszukanie tylko po kliknięciu <b>Szukaj</b>.</div>
+    <div class="algrow-note">🔎 Wyszukiwanie Algrow jest darmowe w ramach planu, ale ma <b>limit zapytań na godzinę</b> (Starter 10/h). Wyniki trzymane w cache 6h — nowe wyszukanie tylko po kliknięciu <b>Szukaj</b>.</div>
 
     <!-- SEKCJA A: viralowe shorty -->
     <h2 class="algrow-sec-title">🚀 Viralowe shorty (outliers)</h2>
@@ -341,7 +341,7 @@
           Tylko commentary
         </label>
       </div>
-      <button id="ag-video-search" class="ag-btn">🔎 Szukaj (płatne)</button>
+      <button id="ag-video-search" class="ag-btn">🔎 Szukaj</button>
       <span class="count" id="ag-video-count"></span>
     </div>
     <div id="ag-videos">
@@ -367,7 +367,7 @@
         <label for="agc-minviews24">Min. views 24h:</label>
         <input type="number" id="agc-minviews24" placeholder="0" min="0" step="1000" class="ag-input ag-num">
       </div>
-      <button id="ag-channel-search" class="ag-btn">🔎 Szukaj (płatne)</button>
+      <button id="ag-channel-search" class="ag-btn">🔎 Szukaj</button>
       <span class="count" id="ag-channel-count"></span>
     </div>
     <div id="ag-channels">
@@ -1321,7 +1321,9 @@
               <div class="ag-ch-stats">
                 👥 ${fmt(c.subs)} subów
                 ${c.views_24h ? ` • ⚡ ${fmt(c.views_24h)}/24h` : ''}
+                ${c.avg_views ? ` • 👁 śr. ${fmt(c.avg_views)}` : ''}
                 ${c.age_days ? ` • 📅 ${c.age_days} dni` : ''}
+                ${c.total_videos ? ` • 🎬 ${c.total_videos}` : ''}
                 ${c.language ? ` • ${c.language}` : ''}
               </div>
             </div>

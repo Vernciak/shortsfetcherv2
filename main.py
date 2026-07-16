@@ -1057,13 +1057,14 @@ def get_ai():
 
 # ---------- Zapisane shorty ----------
 
-# ---------- Parametry Algrow (płatne API do odkrywania) ----------
+# ---------- Parametry Algrow (API do odkrywania; search darmowy w planie, limit/h) ----------
 ALGROW_API_KEY = os.getenv("ALGROW_API_KEY")
-# Bazowy URL REST — edytowalny (docs: https://algrow.online/api/docs)
-ALGROW_API_BASE = os.getenv("ALGROW_API_BASE", "https://algrow.online/api/v1")
-# Ścieżki endpointów — dostosuj jeśli docs podają inne
-ALGROW_EP_VIRAL_VIDEOS = "/search_viral_videos"
-ALGROW_EP_SHORTS_CHANNELS = "/search_shorts_channels"
+# Bazowy URL REST (docs: https://algrow.online/api/docs)
+ALGROW_API_BASE = os.getenv("ALGROW_API_BASE", "https://api.algrow.online")
+# Ścieżki endpointów (potwierdzone w docs)
+ALGROW_EP_VIRAL_VIDEOS = "/api/viral-videos/search"
+ALGROW_EP_SHORTS_CHANNELS = "/api/channels/search"   # wymaga q
+ALGROW_EP_CHANNEL_TRENDS = "/api/channel-trends"     # browse bez q
 # Mocny cache — API kosztuje kredyty (6h)
 ALGROW_CACHE_TTL = 21600
 # Domyślne progi wyszukiwania (edytowalne)
@@ -1153,54 +1154,55 @@ def api_patch_short(video_id):
 # ---------- Endpointy Algrow (płatne odkrywanie) ----------
 
 def _algrow_call(endpoint, params):
-    """Wywołuje REST API Algrow (Bearer). Zwraca (data, error)."""
+    """Wywołuje REST API Algrow (GET + query params, Bearer). Zwraca (data, error)."""
     if not ALGROW_API_KEY:
         return None, "Skonfiguruj ALGROW_API_KEY w zmiennych środowiskowych"
     url = ALGROW_API_BASE.rstrip("/") + endpoint
     try:
-        res = requests.post(
+        res = requests.get(
             url,
-            json=params,
-            headers={"Authorization": f"Bearer {ALGROW_API_KEY}",
-                     "Content-Type": "application/json"},
+            params=params,
+            headers={"Authorization": f"Bearer {ALGROW_API_KEY}"},
             timeout=ALGROW_TIMEOUT,
         )
         if res.status_code == 401:
             return None, "Nieprawidłowy klucz ALGROW_API_KEY"
-        if res.status_code == 402:
-            return None, "Brak kredytów Algrow"
+        if res.status_code == 403:
+            return None, "Ten endpoint wymaga wyższego planu Algrow"
         if res.status_code == 429:
-            return None, "Limit zapytań Algrow — spróbuj później"
+            return None, "Limit zapytań Algrow (na godzinę) — spróbuj później"
         if res.status_code >= 400:
             return None, f"Algrow HTTP {res.status_code}: {res.text[:200]}"
-        print(f"💳 Algrow: {endpoint} OK ({len(res.text)} B)")
+        print(f"💳 Algrow: GET {endpoint} OK ({len(res.text)} B)")
         return res.json(), None
     except Exception as e:
         return None, f"Błąd połączenia z Algrow: {e}"
 
 
 def _algrow_video_to_card(item):
-    """Mapuje wynik Algrow na format karty (jak _parse_video_details)."""
-    vid = item.get("video_id") or item.get("id") or ""
-    ch_id = item.get("channel_id") or ""
+    """Mapuje wynik /api/viral-videos/search na format karty (jak _parse_video_details)."""
+    vid = item.get("video_id") or ""
+    dur_s = int(item.get("duration") or 0)
+    mm, ss = dur_s // 60, dur_s % 60
     return {
         "id": vid,
         "title": item.get("title") or "",
-        "channel": item.get("channel_title") or item.get("channel_name") or "",
-        "channel_id": ch_id,
-        "published": item.get("published_at") or item.get("uploaded_at") or "",
+        "channel": item.get("channel_name") or "",
+        "channel_id": item.get("channel_id") or "",
+        "published": item.get("upload_date") or "",
         "url": item.get("url") or f"https://www.youtube.com/shorts/{vid}",
-        "thumbnail": item.get("thumbnail") or f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg",
-        "views": int(item.get("views") or item.get("view_count") or 0),
-        "likes": int(item.get("likes") or item.get("like_count") or 0),
-        "comment_count": int(item.get("comments") or item.get("comment_count") or 0),
-        "duration": item.get("duration") or "",
-        "duration_seconds": int(item.get("duration_seconds") or 0),
-        "description": (item.get("description") or "")[:500],
-        "tags": item.get("tags") or [],
+        "thumbnail": item.get("thumbnail_url") or f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg",
+        "views": int(item.get("view_count") or 0),
+        "likes": 0,
+        "comment_count": 0,
+        "duration": f"{mm}:{str(ss).zfill(2)}" if dur_s else "",
+        "duration_seconds": dur_s,
+        "description": "",
+        "tags": [],
         "category_id": "",
         "outlier_score": round(float(item.get("outlier_score") or 0), 1),
-        "channel_subs": int(item.get("subscriber_count") or item.get("channel_subs") or 0),
+        "channel_subs": int(item.get("subscriber_count") or 0),
+        "views_24h": int(item.get("view_increase_24h") or 0),
     }
 
 
@@ -1223,19 +1225,20 @@ def algrow_videos():
         "content_type": "shorts",
         "sort_by": "outlier_score",
         "min_outlier_score": float(body.get("min_outlier_score") or ALGROW_MIN_OUTLIER),
-        "uploaded_within_days": int(body.get("uploaded_within_days") or ALGROW_UPLOADED_DAYS),
+        "max_upload_date": int(body.get("uploaded_within_days") or ALGROW_UPLOADED_DAYS),
         "min_video_views": int(body.get("min_video_views") or ALGROW_MIN_VIEWS),
+        "per_page": 50,
     }
     if body.get("max_subs"):
         params["max_subs"] = int(body["max_subs"])
     if body.get("search"):
-        params["search"] = str(body["search"])[:200]
+        params["q"] = str(body["search"])[:200]
 
     data, err = _algrow_call(ALGROW_EP_VIRAL_VIDEOS, params)
     if err:
         return jsonify({"videos": [], "error": err, "configured": bool(ALGROW_API_KEY)}), 200
 
-    raw_items = data.get("videos") or data.get("results") or data.get("items") or []
+    raw_items = data.get("videos") or []
     videos = [_algrow_video_to_card(i) for i in raw_items]
     videos = [v for v in videos if v["id"]]
 
@@ -1297,36 +1300,56 @@ def algrow_channels():
                         "configured": bool(ALGROW_API_KEY)})
 
     body = request.get_json(silent=True) or {}
-    params = {
-        "max_subs": int(body.get("max_subs") or ALGROW_CH_MAX_SUBS),
-        "max_age": int(body.get("max_age") or ALGROW_CH_MAX_AGE),
-        "sort": body.get("sort") or "views_24h_desc",
-    }
-    if body.get("q"):
-        params["q"] = str(body["q"])[:200]
-    if body.get("min_views_24h"):
-        params["min_views_24h"] = int(body["min_views_24h"])
-    if body.get("languages"):
-        params["languages"] = body["languages"]
+    q = str(body.get("q") or "").strip()[:200]
+    max_subs = int(body.get("max_subs") or ALGROW_CH_MAX_SUBS)
+    max_age = int(body.get("max_age") or ALGROW_CH_MAX_AGE)
 
-    data, err = _algrow_call(ALGROW_EP_SHORTS_CHANNELS, params)
+    if q:
+        # Similarity/keyword search — q wymagane przez /api/channels/search
+        params = {
+            "q": q,
+            "max_subs": max_subs,
+            "max_age": max_age,
+            "sort": body.get("sort") or "views_24h_desc",
+            "per_page": 50,
+        }
+        if body.get("min_views_24h"):
+            params["min_views_24h"] = int(body["min_views_24h"])
+        if body.get("languages"):
+            params["languages"] = body["languages"]
+        data, err = _algrow_call(ALGROW_EP_SHORTS_CHANNELS, params)
+    else:
+        # Browse bez frazy — leaderboard wzrostów /api/channel-trends
+        params = {
+            "content_type": "shorts",
+            "metric": "views",
+            "max_subs": max_subs,
+            "max_age": max_age,
+            "per_page": 50,
+        }
+        if body.get("languages"):
+            params["languages"] = body["languages"]
+        data, err = _algrow_call(ALGROW_EP_CHANNEL_TRENDS, params)
+
     if err:
         return jsonify({"channels": [], "error": err, "configured": bool(ALGROW_API_KEY)}), 200
 
-    raw = data.get("channels") or data.get("results") or data.get("items") or []
+    raw = data.get("channels") or []
     channels = []
     for c in raw:
-        ch_id = c.get("channel_id") or c.get("id") or ""
+        ch_id = c.get("channel_id") or ""
         channels.append({
             "channel_id": ch_id,
-            "title": c.get("title") or c.get("name") or "",
-            "url": c.get("url") or (f"https://www.youtube.com/channel/{ch_id}" if ch_id else ""),
-            "thumbnail": c.get("thumbnail") or c.get("avatar") or "",
-            "subs": int(c.get("subscriber_count") or c.get("subs") or 0),
-            "views_24h": int(c.get("views_24h") or 0),
-            "age_days": int(c.get("age_days") or c.get("channel_age_days") or 0),
-            "language": c.get("language") or "",
-            "description": (c.get("description") or "")[:300],
+            "title": c.get("channel_title") or c.get("title") or "",
+            "url": f"https://www.youtube.com/channel/{ch_id}" if ch_id else "",
+            "thumbnail": c.get("thumbnail_url") or "",
+            "subs": int(c.get("subscriber_count") or 0),
+            "views_24h": int(c.get("view_increase_24h") or 0),
+            "age_days": int(c.get("channel_age_days") or 0),
+            "language": c.get("primary_language") or "",
+            "avg_views": int(c.get("avg_views_per_video") or 0),
+            "total_videos": int(c.get("total_videos") or 0),
+            "description": "",
         })
     channels = [c for c in channels if c["channel_id"]]
 
