@@ -1073,7 +1073,8 @@ ALGROW_UPLOADED_DAYS = 7        # z ostatnich 7 dni
 ALGROW_MIN_VIEWS = 10000        # min. wyświetleń filmu
 ALGROW_CH_MAX_SUBS = 10000      # sekcja B: kanały do 10k subów
 ALGROW_CH_MAX_AGE = 90          # sekcja B: kanały młodsze niż 90 dni
-ALGROW_TIMEOUT = 30
+ALGROW_TIMEOUT = 60      # pierwsze zapytanie bywa wolne
+ALGROW_RETRIES = 2       # ponowienia przy timeout
 
 # ---------- Parametry endpointu Hashtagi ----------
 # Tagi generyczne — dominują, zaśmiecają; edytowalna lista
@@ -1158,25 +1159,31 @@ def _algrow_call(endpoint, params):
     if not ALGROW_API_KEY:
         return None, "Skonfiguruj ALGROW_API_KEY w zmiennych środowiskowych"
     url = ALGROW_API_BASE.rstrip("/") + endpoint
-    try:
-        res = requests.get(
-            url,
-            params=params,
-            headers={"Authorization": f"Bearer {ALGROW_API_KEY}"},
-            timeout=ALGROW_TIMEOUT,
-        )
-        if res.status_code == 401:
-            return None, "Nieprawidłowy klucz ALGROW_API_KEY"
-        if res.status_code == 403:
-            return None, "Ten endpoint wymaga wyższego planu Algrow"
-        if res.status_code == 429:
-            return None, "Limit zapytań Algrow (na godzinę) — spróbuj później"
-        if res.status_code >= 400:
-            return None, f"Algrow HTTP {res.status_code}: {res.text[:200]}"
-        print(f"💳 Algrow: GET {endpoint} OK ({len(res.text)} B)")
-        return res.json(), None
-    except Exception as e:
-        return None, f"Błąd połączenia z Algrow: {e}"
+    last_err = None
+    for attempt in range(ALGROW_RETRIES):
+        try:
+            res = requests.get(
+                url,
+                params=params,
+                headers={"Authorization": f"Bearer {ALGROW_API_KEY}"},
+                timeout=ALGROW_TIMEOUT,
+            )
+            if res.status_code == 401:
+                return None, "Nieprawidłowy klucz ALGROW_API_KEY"
+            if res.status_code == 403:
+                return None, "Ten endpoint wymaga wyższego planu Algrow"
+            if res.status_code == 429:
+                return None, "Limit zapytań Algrow (na godzinę) — spróbuj później"
+            if res.status_code >= 400:
+                return None, f"Algrow HTTP {res.status_code}: {res.text[:200]}"
+            print(f"💳 Algrow: GET {endpoint} OK ({len(res.text)} B)")
+            return res.json(), None
+        except requests.exceptions.Timeout:
+            last_err = f"Algrow nie odpowiedział w {ALGROW_TIMEOUT}s"
+            print(f"⚠️ Algrow timeout (próba {attempt+1}/{ALGROW_RETRIES}): {endpoint}")
+        except Exception as e:
+            return None, f"Błąd połączenia z Algrow: {e}"
+    return None, f"{last_err} — spróbuj ponownie (kolejne zapytania są zwykle szybsze)"
 
 
 def _algrow_video_to_card(item):
