@@ -1427,8 +1427,38 @@ def odkrywaj_keywords():
     })
 
 
+# Cache weryfikacji "czy to naprawdę short" (per proces; film nie zmienia typu)
+_shorts_verify_cache = {}
+
+
+def _is_real_short(video_id):
+    """True jeśli film jest prawdziwym shortem.
+
+    YouTube przekierowuje /shorts/ID na /watch dla zwykłych filmów —
+    status 200 = short, 30x = longform. Wynik cache'owany na stałe.
+    """
+    if video_id in _shorts_verify_cache:
+        return _shorts_verify_cache[video_id]
+    try:
+        res = requests.head(
+            f"https://www.youtube.com/shorts/{video_id}",
+            allow_redirects=False, timeout=5,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        is_short = res.status_code == 200
+    except Exception:
+        is_short = True  # przy błędzie nie wycinaj — lepiej pokazać za dużo niż zgubić
+    _shorts_verify_cache[video_id] = is_short
+    return is_short
+
+
 def _odkrywaj_search_yt(phrase, days):
-    """Tryb A: GET /api/search — cały YouTube, filtrowanie do shortów po stronie serwera."""
+    """Tryb A: GET /api/search — cały YouTube, filtrowanie do shortów po stronie serwera.
+
+    Uwaga: przy published_within_days Algrow ignoruje duration=short (zweryfikowane),
+    więc dodatkowo odsiewamy po duration_seconds ORAZ weryfikujemy przekierowanie
+    /shorts/ID (łapie 1-3 min zwykłe filmy, których sam czas trwania nie odsieje).
+    """
     params = {
         "q": phrase,
         "type": "video",
@@ -1448,6 +1478,8 @@ def _odkrywaj_search_yt(phrase, days):
         if dur_s == 0 or dur_s > ODKRYWAJ_MAX_DUR:
             continue
         vid = item.get("video_id") or ""
+        if not _is_real_short(vid):
+            continue
         mm, ss = dur_s // 60, dur_s % 60
         videos.append({
             "id": vid,
@@ -1483,6 +1515,7 @@ def _odkrywaj_search_viral(phrase, days, min_outlier, max_subs):
         "max_upload_date": days,
         "max_subs": max_subs,
         "per_page": 50,
+        "include_youtube": "true",  # rozszerza poza curated bazę Algrow
     }
     data, err = _algrow_call(ALGROW_EP_VIRAL_VIDEOS, params)
     if err:
