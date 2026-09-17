@@ -66,6 +66,17 @@ AI_MIN_CONFIDENCE = 60
 AI_CACHE_TTL = 7200
 # Max kandydatów do oceny per request — reszta zostanie w DB cache przy kolejnym odświeżeniu
 AI_MAX_NEW_PER_REQUEST = 150
+# Ile procent budżetu Gemini rezerwujemy na filmy SPOZA mojej bazy (trendy).
+# Kanały z bazy i tak widać w /commentary, a pula kanałów (50 uploadów × N kanałów)
+# potrafi przytłoczyć trendy — bez tego podziału Gemini ocenia prawie same moje kanały.
+AI_TREND_SHARE = 0.7
+# Minimalny darmowy score (commentary_patterns) żeby w ogóle pytać Gemini.
+# Score 0 = film 121-180 s bez trafienia w żadne słowo-klucz w 13 językach.
+# Podnieś żeby oszczędzać tokeny, obniż do 0 żeby Gemini widział wszystko.
+AI_PRESCORE_MIN = 3
+# Ile znaków opisu wysyłamy do Gemini. Opisy shortów to głównie hashtagi i linki,
+# więc obcięcie z 300 do 120 tnie tokeny wejściowe o ~45% prawie bez utraty sygnału.
+AI_DESC_CHARS = 120
 
 # Lekkie anty-wzorce dla preselekcji przed Gemini (tylko oczywiste przypadki)
 _AI_HARD_REJECT = [
@@ -837,7 +848,7 @@ def _rate_with_gemini(candidates):
                 "video_id": v["id"],
                 "title": v["title"],
                 "channel": v["channel"],
-                "description": (v.get("description") or "")[:300],
+                "description": (v.get("description") or "")[:AI_DESC_CHARS],
             }
             for v in batch
         ]
@@ -1006,11 +1017,42 @@ def get_ai():
 
     uncached = [v for v in to_rate if v["id"] not in cached_ratings]
 
-    # Oceń nowe przez Gemini — max AI_MAX_NEW_PER_REQUEST na raz (reszta trafi przy kolejnym odświeżeniu)
+    # --- Wybór kandydatów dla Gemini ---
+    # Zamiast brać pierwsze 150 w kolejności puli (kanały, potem trendy od USA —
+    # przez co dalsze kraje nigdy nie dostawały oceny), rankujemy DARMOWYM
+    # scoringiem z commentary_patterns i dzielimy budżet: większość na trendy
+    # spoza bazy, reszta na moje kanały.
+    my_channel_ids = set(all_channel_ids)
+    ranked_trend, ranked_mine = [], []
+    for v in uncached:
+        prescore, _ = score_commentary(
+            v["title"], v.get("description", ""), v.get("duration_seconds", 0), False
+        )
+        if prescore < AI_PRESCORE_MIN:
+            continue  # bez szans na commentary — nie marnuj tokenów
+        v["prescore"] = prescore
+        if v.get("channel_id", "") in my_channel_ids:
+            ranked_mine.append(v)
+        else:
+            ranked_trend.append(v)
+
+    ranked_trend.sort(key=lambda v: v["prescore"], reverse=True)
+    ranked_mine.sort(key=lambda v: v["prescore"], reverse=True)
+
+    # Podział budżetu; jeśli jedna grupa ma mniej kandydatów, druga dobiera resztę
+    trend_budget = int(AI_MAX_NEW_PER_REQUEST * AI_TREND_SHARE)
+    to_gemini = ranked_trend[:trend_budget]
+    to_gemini += ranked_mine[:AI_MAX_NEW_PER_REQUEST - len(to_gemini)]
+    if len(to_gemini) < AI_MAX_NEW_PER_REQUEST:
+        already = {v["id"] for v in to_gemini}
+        leftovers = [v for v in ranked_trend if v["id"] not in already]
+        to_gemini += leftovers[:AI_MAX_NEW_PER_REQUEST - len(to_gemini)]
+
+    n_skipped = len(uncached) - len(ranked_trend) - len(ranked_mine)
     new_ratings = {}
-    to_gemini = uncached[:AI_MAX_NEW_PER_REQUEST]
-    if len(uncached) > AI_MAX_NEW_PER_REQUEST:
-        print(f"ℹ️ AI: {len(uncached)} nowych kandydatów, oceniam pierwsze {AI_MAX_NEW_PER_REQUEST}")
+    print(f"ℹ️ AI: {len(uncached)} nowych kandydatów "
+          f"({n_skipped} odsianych darmowym scoringiem), do Gemini idzie "
+          f"{len(to_gemini)} — w tym {len([v for v in to_gemini if v.get('channel_id','') not in my_channel_ids])} spoza bazy")
     if to_gemini and GEMINI_API_KEY:
         new_ratings = _rate_with_gemini(to_gemini)
         try:
