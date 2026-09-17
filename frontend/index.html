@@ -201,6 +201,16 @@
         </select>
       </div>
       <button id="ai-refresh">🔄 Odśwież</button>
+      <div class="group">
+        <select id="ai-fc-days" title="Z jakiego okresu brać filmy z Commentary">
+          <option value="1">24h</option>
+          <option value="3" selected>3 dni</option>
+          <option value="7">7 dni</option>
+          <option value="30">30 dni</option>
+          <option value="0">Wszystko</option>
+        </select>
+        <button id="ai-from-commentary" title="Przepuszcza filmy z 🎙️ Commentary przez Gemini i dorzuca tu. Nie zużywa quota YouTube.">➕ Dodaj z Commentary</button>
+      </div>
       <div class="c-hint" id="ai-hint"></div>
       <span class="count" id="ai-count"></span>
     </div>
@@ -1008,6 +1018,58 @@
         // Wymuś pominięcie cache endpointu po stronie serwera
         fetch('/api/ai/refresh', {method: 'POST'}).catch(() => {});
         loadAI();
+      });
+
+      // Dorzuca filmy z /commentary przez Gemini — bez quota YouTube
+      const fcBtn = document.getElementById('ai-from-commentary');
+      fcBtn.addEventListener('click', async () => {
+        const days = Number(document.getElementById('ai-fc-days').value);
+        fcBtn.disabled = true;
+        const oldLabel = fcBtn.textContent;
+        fcBtn.textContent = '⏳ Mielę przez Gemini…';
+        hint.textContent = 'Biorę filmy z Commentary i oceniam je przez Gemini…';
+        try {
+          const r = await fetch('/api/ai/from-commentary', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({days, sort: 'views'}),
+          });
+          const data = await r.json();
+          if (!data.ok) {
+            hint.textContent = '❌ ' + (data.error || 'Błąd');
+            return;
+          }
+          if (data.videos) {
+            allAI = data.videos;
+            // Poszerz okno widoku, żeby dorzucone filmy nie zniknęły za filtrem okresu
+            const want = (days === 0 || days > 7) ? 0 : days;
+            if (aiPeriodDays !== 0 && (want === 0 || want > aiPeriodDays)) {
+              aiPeriodDays = want;
+              periodBox.querySelectorAll('button').forEach(b => {
+                b.classList.toggle('active', Number(b.dataset.d) === want);
+              });
+            }
+            const langs = [...new Set(allAI.map(v => v.lang).filter(l => l && l !== '?'))].sort();
+            const have = new Set([...langSel.options].map(o => o.value));
+            langs.forEach(l => {
+              if (have.has(l)) return;
+              const opt = document.createElement('option');
+              opt.value = l;
+              opt.textContent = (allAI.find(v => v.lang === l)?.lang_flag || '') + ' ' + l.toUpperCase();
+              langSel.appendChild(opt);
+            });
+            renderAI();
+          }
+          hint.textContent = data.added
+            ? `✅ Ocenionych ${data.rated}, commentary ${data.commentary}, nowych w puli ${data.added}. `
+              + `Zostało nieocenionych: ${data.remaining} (źródło: ${data.source}).`
+            : (data.message || `Oceniono ${data.rated}, ale nic nowego nie doszło do puli.`);
+        } catch (e) {
+          hint.textContent = '❌ ' + e;
+        } finally {
+          fcBtn.disabled = false;
+          fcBtn.textContent = oldLabel;
+        }
       });
 
       sortSel.addEventListener('change', renderAI);

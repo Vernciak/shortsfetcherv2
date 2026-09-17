@@ -77,6 +77,10 @@ AI_PRESCORE_MIN = 3
 # Ile znaków opisu wysyłamy do Gemini. Opisy shortów to głównie hashtagi i linki,
 # więc obcięcie z 300 do 120 tnie tokeny wejściowe o ~45% prawie bez utraty sygnału.
 AI_DESC_CHARS = 120
+# Ile filmów z /commentary przepuszczamy przez Gemini na jedno kliknięcie
+# "Dodaj z Commentary". Zero quota YouTube — pula jest już pobrana.
+# Trzymaj poniżej ~200, inaczej request może przekroczyć limit czasu workera.
+AI_FROM_COMMENTARY_LIMIT = 100
 
 # Lekkie anty-wzorce dla preselekcji przed Gemini (tylko oczywiste przypadki)
 _AI_HARD_REJECT = [
@@ -808,6 +812,179 @@ def ai_refresh():
     """Czyści cache endpointu AI, żeby następne GET /api/ai pobrało świeże dane."""
     _cache.pop("ai", None)
     return jsonify({"ok": True})
+
+
+def _commentary_candidates(days):
+    """Zwraca kandydatów z /commentary — zero quota YouTube.
+
+    Najpierw świeży cache /commentary (filmy mają już policzony score, język,
+    vph i kraj). Gdy cache wygasł, sięgamy do trwałej tabeli video_metadata
+    i przeliczamy score za darmo tym samym scoringiem co /commentary.
+    Zwraca (lista, skąd).
+    """
+    now = time.time()
+    cutoff = (now - days * 86400) if days > 0 else 0
+
+    def _fresh_enough(v):
+        if not cutoff or not v.get("published"):
+            return True
+        try:
+            from datetime import datetime
+            ts = datetime.fromisoformat(v["published"].replace("Z", "+00:00")).timestamp()
+            return ts >= cutoff
+        except Exception:
+            return True
+
+    cached = _cache.get("commentary")
+    if cached and now - cached[0] < COMMENTARY_CACHE_TTL:
+        return [v for v in (cached[1].get("videos") or []) if _fresh_enough(v)], "cache /commentary"
+
+    # Fallback: trwała baza metadanych — przetrwa restart i kumuluje się w czasie
+    try:
+        rows = db.get_all_video_metadata()
+    except Exception as e:
+        print(f"⚠️ video_metadata read (from-commentary): {e}")
+        return [], "brak"
+
+    out = []
+    for r in rows:
+        dur = r.get("duration") or ""
+        try:
+            mm, ss = dur.split(":")
+            dur_s = int(mm) * 60 + int(ss)
+        except Exception:
+            dur_s = 0
+        v = {
+            "id": r["video_id"],
+            "title": r.get("title") or "",
+            "channel": r.get("channel") or "",
+            "channel_id": r.get("channel_id") or "",
+            "published": r.get("published") or "",
+            "url": f"https://www.youtube.com/shorts/{r['video_id']}",
+            "thumbnail": r.get("thumbnail") or f"https://i.ytimg.com/vi/{r['video_id']}/mqdefault.jpg",
+            "views": int(r.get("views") or 0),
+            "likes": int(r.get("likes") or 0),
+            "comment_count": 0,
+            "duration": dur,
+            "duration_seconds": dur_s,
+            "description": (r.get("description") or "")[:500],
+        }
+        if not _fresh_enough(v):
+            continue
+        score, lang = score_commentary(v["title"], v["description"], dur_s, False)
+        if score < COMMENTARY_MIN_SCORE:
+            continue  # ten sam próg co /commentary
+        v["commentary_score"] = score
+        v["lang"] = lang
+        v["lang_flag"] = LANG_FLAGS.get(lang, "🌐")
+        out.append(v)
+    return out, "baza video_metadata"
+
+
+@app.route('/api/ai/from-commentary', methods=['POST'])
+def ai_from_commentary():
+    """Przepuszcza filmy z /commentary przez Gemini i dorzuca je do puli /ai.
+
+    Zero quota YouTube — korzystamy z danych, które już mamy.
+    """
+    body = request.get_json(silent=True) or {}
+    days = float(body.get("days") if body.get("days") is not None else 3)
+    limit = min(int(body.get("limit") or AI_FROM_COMMENTARY_LIMIT), 200)
+    sort_by = body.get("sort") or "views"
+
+    candidates, source = _commentary_candidates(days)
+    if not candidates:
+        return jsonify({
+            "ok": False,
+            "error": "Brak kandydatów — otwórz najpierw zakładkę 🎙️ Commentary, "
+                     "żeby zbudować pulę, albo poszerz okres.",
+        })
+
+    # Pomiń te, które Gemini już ocenił (ocena jest trwała w ai_ratings)
+    try:
+        known = db.get_ai_ratings([v["id"] for v in candidates])
+    except Exception as e:
+        print(f"⚠️ DB ai_ratings read (from-commentary): {e}")
+        known = {}
+    fresh = [v for v in candidates if v["id"] not in known]
+
+    if sort_by == "commentary_score":
+        fresh.sort(key=lambda v: v.get("commentary_score", 0), reverse=True)
+    elif sort_by == "published":
+        fresh.sort(key=lambda v: v.get("published") or "", reverse=True)
+    else:
+        fresh.sort(key=lambda v: v.get("views", 0), reverse=True)
+
+    to_gemini = fresh[:limit]
+    if not to_gemini:
+        return jsonify({
+            "ok": True, "added": 0, "rated": 0, "source": source,
+            "message": f"Wszystkie {len(candidates)} filmów z tego okresu ma już ocenę Gemini.",
+        })
+    if not GEMINI_API_KEY:
+        return jsonify({"ok": False, "error": "Brak GEMINI_API_KEY"})
+
+    ratings = _rate_with_gemini(to_gemini)
+    try:
+        db.save_ai_ratings([{"video_id": vid, **r} for vid, r in ratings.items()])
+    except Exception as e:
+        print(f"⚠️ DB ai_ratings write (from-commentary): {e}")
+
+    # Zbierz te, które Gemini uznał za commentary
+    accepted = []
+    for v in to_gemini:
+        r = ratings.get(v["id"])
+        if not r or not r["is_commentary"] or r["confidence"] < AI_MIN_CONFIDENCE:
+            continue
+        v["ai_confidence"] = r["confidence"]
+        v["ai_reason"] = r["reason"]
+        v["from_commentary"] = True
+        accepted.append(v)
+
+    # Uzupełnij metryki i flagi krajów tak, żeby karty wyglądały jak reszta /ai
+    now = time.time()
+    for v in accepted:
+        if v.get("vph") is None or "vph" not in v:
+            pub_ts = 0
+            try:
+                from datetime import datetime
+                pub_ts = datetime.fromisoformat(
+                    v["published"].replace("Z", "+00:00")).timestamp()
+            except Exception:
+                pass
+            hours = max((now - pub_ts) / 3600, 0.5) if pub_ts else None
+            v["vph"] = round(v["views"] / hours, 1) if hours else None
+    missing_country = [v for v in accepted if not v.get("country_flag")]
+    if missing_country:
+        _enrich_with_country(missing_country)
+
+    # Dorzuć do cache /ai, żeby pojawiły się bez pełnego (płatnego) odświeżenia
+    cached_ai = _cache.get("ai")
+    base_payload = dict(cached_ai[1]) if cached_ai else {
+        "videos": [], "quota_used": 0, "cached": False,
+        "gemini_new": 0, "gemini_cached": 0,
+    }
+    existing = list(base_payload.get("videos") or [])
+    have = {v["id"] for v in existing}
+    added = [v for v in accepted if v["id"] not in have]
+    merged = existing + added
+    merged.sort(key=lambda v: v.get("ai_confidence", 0), reverse=True)
+    base_payload["videos"] = merged
+    _cache["ai"] = (cached_ai[0] if cached_ai else now, base_payload)
+
+    print(f"➕ AI z Commentary [{source}]: ocenionych {len(to_gemini)}, "
+          f"commentary {len(accepted)}, nowych w puli {len(added)}, "
+          f"nieocenionych zostało {max(len(fresh) - len(to_gemini), 0)}")
+
+    return jsonify({
+        "ok": True,
+        "source": source,
+        "rated": len(to_gemini),
+        "commentary": len(accepted),
+        "added": len(added),
+        "remaining": max(len(fresh) - len(to_gemini), 0),
+        "videos": merged,
+    })
 
 
 @app.route('/api/ai/models')

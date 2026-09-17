@@ -992,3 +992,27 @@ select {
     padding: 14px 16px 40px;
   }
 }
+
+/* ---------- Przyciski w widoku AI ---------- */
+#ai-refresh, #ai-from-commentary {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 7px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: filter .15s ease;
+}
+#ai-refresh:hover, #ai-from-commentary:hover { filter: brightness(1.1); }
+#ai-refresh:disabled, #ai-from-commentary:disabled { opacity: .5; cursor: default; }
+
+/* Dodawanie z Commentary — akcent drugorzędny, bo nie zużywa quota */
+#ai-from-commentary {
+  background: transparent;
+  color: var(--accent-2);
+  border: 1px solid rgba(77, 208, 225, 0.45);
+}
+#ai-from-commentary:hover { background: rgba(77, 208, 225, 0.12); filter: none; }
