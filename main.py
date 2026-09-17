@@ -45,6 +45,14 @@ COMMENTARY_COUNTRIES = ["US", "GB", "RU", "BR", "ES", "MX", "DE", "FR", "IT", "P
 COMMENTARY_EXTRA_CATEGORIES = ["24", "22", "28", "26"]
 # Minimalny wynik żeby short trafił do wyników (łatwy do podkręcenia)
 COMMENTARY_MIN_SCORE = 10
+# Bonus dla shortów z kanałów w mojej bazie (nawet nieoznaczonych 🎙️).
+# Równy progowi => każdy short z moich kanałów przechodzi filtr.
+# Ustaw 0 żeby wrócić do starego zachowania (tylko scoring po treści).
+COMMENTARY_MY_CHANNEL_BONUS = 10
+# Ile ostatnich uploadów pobieramy z każdego kanału.
+# playlistItems kosztuje 1 jednostkę niezależnie od maxResults (1-50),
+# więc podniesienie z 20 na 50 kosztuje tylko dodatkowe paczki videos.list.
+COMMENTARY_UPLOADS = 50
 # TTL cache commentary — droższe przez wiele krajów, więc dłuższe (2h)
 COMMENTARY_CACHE_TTL = 7200
 
@@ -559,6 +567,7 @@ def get_commentary():
     # Źródło 1: moje kanały (ostatnie 20 uploadów jak w hitach)
     commentary_channel_ids = {ch for ch, flag in channels_with_flags if flag}
     all_channel_ids = [ch for ch, _ in channels_with_flags]
+    my_channel_ids = set(all_channel_ids)
 
     channel_video_ids = {}
     for channel_id in all_channel_ids:
@@ -568,7 +577,7 @@ def get_commentary():
             try:
                 url = ("https://www.googleapis.com/youtube/v3/playlistItems"
                        f"?part=contentDetails&playlistId={uploads_playlist_id}"
-                       f"&maxResults=20"
+                       f"&maxResults={COMMENTARY_UPLOADS}"
                        f"&key={API_KEYS[key_idx[0] % len(API_KEYS)]}")
                 res = requests.get(url, timeout=10).json()
                 quota_used += 1
@@ -645,6 +654,11 @@ def get_commentary():
             v.get("duration_seconds", 0),
             is_commentary_ch,
         )
+        # Shorty z moich kanałów zawsze przechodzą — bez tego wypadały te
+        # dłuższe niż 50 s bez trafienia w słowo-klucz (0-3 pkt przy progu 10).
+        if v.get("channel_id", "") in my_channel_ids:
+            score += COMMENTARY_MY_CHANNEL_BONUS
+            v["from_my_base"] = True
         if score < COMMENTARY_MIN_SCORE:
             continue
 
@@ -903,7 +917,7 @@ def get_ai():
             try:
                 url = ("https://www.googleapis.com/youtube/v3/playlistItems"
                        f"?part=contentDetails&playlistId={uploads_playlist_id}"
-                       f"&maxResults=20"
+                       f"&maxResults={COMMENTARY_UPLOADS}"
                        f"&key={API_KEYS[key_idx[0] % len(API_KEYS)]}")
                 res = requests.get(url, timeout=10).json()
                 quota_used += 1

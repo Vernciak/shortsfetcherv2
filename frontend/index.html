@@ -543,6 +543,7 @@
       const langBadge = v.lang && v.lang !== '?' ? `<span class="badge-lang">${v.lang_flag || ''} ${v.lang}</span>` : '';
       const countryBadge = v.country_flag ? `<span class="badge-lang" title="${v.country_guessed ? 'Kraj szacowany po języku tytułu/opisu' : 'Kraj kanału'}: ${v.country}">${v.country_flag} ${v.country_guessed ? '≈' : ''}${v.country}</span>` : '';
       const scoreBadge = v.commentary_score != null ? `<span class="badge-score">★${v.commentary_score}</span>` : '';
+      const mineBadge = v.from_my_base ? `<span class="badge-lang" title="Kanał z Twojej bazy">📌 moje</span>` : '';
       const vphStr = v.vph != null ? `<span title="wyświetlenia/h">⚡ <b>${fmt(v.vph)}/h</b></span>` : '';
       const engStr = v.engagement_rate != null ? `<span title="engagement">💬 <b>${v.engagement_rate}%</b></span>` : '';
       const descSnippet = v.description ? `<div class="card-desc">${v.description.slice(0,120).replace(/</g,'&lt;')}</div>` : '';
@@ -563,7 +564,7 @@
             <a class="title-link" href="${v.url}" target="_blank" rel="noopener"><h3>${v.title}</h3></a>
             ${saveBtn}
           </div>
-          <div class="channel">${v.channel || 'Nieznany kanał'} ${countryBadge} ${langBadge}</div>
+          <div class="channel">${v.channel || 'Nieznany kanał'} ${mineBadge} ${countryBadge} ${langBadge}</div>
           <div class="stats">
             <span>👁️ <b>${fmt(v.views)}</b></span>
             <span>👍 <b>${fmt(v.likes)}</b></span>
